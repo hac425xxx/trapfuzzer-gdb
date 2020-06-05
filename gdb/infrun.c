@@ -1566,8 +1566,6 @@ unsigned long fuzz_get_file_size(const char *path)
 static void
 infrun_inferior_exit (struct inferior *inf)
 {
-  fprintf_unfiltered (gdb_stdlog, "infrun_inferior_exit\n");
-
   if(g_patch_to_binary)
   {
     char* fpath = "/home/hac425/gdb-9.2/build/test";
@@ -1592,12 +1590,14 @@ infrun_inferior_exit (struct inferior *inf)
       munmap(file_content, size);
       close(fd);
 
-      fprintf_unfiltered (gdb_stdlog, "patch %d bytes\n", g_bb_trace.size());
+      fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch %d bytes\n", g_bb_trace.size());
     }
   }
 
   g_bb_trace.clear();
   inf->displaced_step_state.reset ();
+  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] inferior exit!\n", g_bb_trace.size());
+
 }
 
 /* If ON, and the architecture supports it, GDB will use displaced
@@ -5502,6 +5502,8 @@ static void save_trace_info(enum TRACE_STATUS status)
 
     fclose(fp);
   }
+
+  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] save_trace_info done\n");
 }
 
 
@@ -5671,7 +5673,7 @@ handle_signal_stop (struct execution_control_state *ecs)
         // exit point
         if(voff == 0xC95)
         {
-          fprintf_unfiltered (gdb_stdlog, "kill program\n");
+          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb\n");
           save_trace_info(NORMAL);
           stop_waiting (ecs);
           return;
