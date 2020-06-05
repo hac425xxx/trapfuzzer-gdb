@@ -71,6 +71,7 @@ std::map<unsigned int, BB_INFO*> g_bb_info_map;
 char* g_coverage_module_name = NULL;
 CORE_ADDR g_coverage_module_base = 0x400000;
 CORE_ADDR g_coverage_module_end = 0x603000;
+unsigned int g_patch_to_binary = 1;
 
 std::vector<unsigned int> g_bb_trace;
 
@@ -1543,9 +1544,59 @@ get_displaced_step_closure_by_addr (CORE_ADDR addr)
   return NULL;
 }
 
+#include<unistd.h>
+#include<fcntl.h>
+#include<sys/stat.h>
+#include<sys/mman.h>
+
+#define FUZZ_PAGE_SIZE 0x1000
+
+unsigned long fuzz_get_file_size(const char *path)
+{
+	unsigned long filesize = -1;	
+	struct stat statbuff;
+	if(stat(path, &statbuff) < 0){
+		return filesize;
+	}else{
+		filesize = statbuff.st_size;
+	}
+	return filesize;
+}
+
 static void
 infrun_inferior_exit (struct inferior *inf)
 {
+  fprintf_unfiltered (gdb_stdlog, "infrun_inferior_exit\n");
+
+  if(g_patch_to_binary)
+  {
+    char* fpath = "/home/hac425/gdb-9.2/build/test";
+    int fd = open(fpath, O_RDWR | O_CREAT, 0666);
+  
+    unsigned int size = fuzz_get_file_size(fpath);
+    size = FUZZ_PAGE_SIZE - (size % FUZZ_PAGE_SIZE) + size;
+
+    unsigned char* file_content = (unsigned char*)mmap(0, size, PROT_READ|PROT_WRITE, MAP_FILE|MAP_SHARED, fd, 0);
+    fprintf_unfiltered (gdb_stdlog, "addr:%p, size:0x%x\n", file_content, size);
+
+    if(file_content != (unsigned char*)-1)
+    {
+      int i = 0;
+      for(i = 0; i < g_bb_trace.size(); i++)
+      {
+        unsigned int off = g_bb_trace[i];
+        BB_INFO* info = g_bb_info_map[off];
+        memcpy(file_content + info->foff, info->instr, info->instr_size);
+      }
+
+      munmap(file_content, size);
+      close(fd);
+
+      fprintf_unfiltered (gdb_stdlog, "patch %d bytes\n", g_bb_trace.size());
+    }
+  }
+
+  g_bb_trace.clear();
   inf->displaced_step_state.reset ();
 }
 
@@ -5428,7 +5479,7 @@ static void save_trace_info(enum TRACE_STATUS status)
     {
       fprintf (fp, "0x%X,", g_bb_trace[i]);
     }
-    g_bb_trace.clear();
+    // g_bb_trace.clear();
     fprintf (fp, "0x%X", g_bb_trace[i]);
   }
 
@@ -5637,8 +5688,6 @@ handle_signal_stop (struct execution_control_state *ecs)
         }
       }
 
-
-      fprintf_unfiltered (gdb_stdlog, "add trapfuzzer patch\n");
 
       /* However, before doing so, if this single-step breakpoint was
 	 actually for another thread, set this thread up for moving
