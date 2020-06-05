@@ -303,4 +303,12 @@ struct displaced_step_inferior_state
   gdb::byte_vector step_saved_copy;
 };
 
+typedef struct _BB_INFO{
+   unsigned int voff;
+   unsigned int foff;
+   unsigned int instr_size;
+   unsigned char instr[4];
+}BB_INFO;
+
+
 #endif /* INFRUN_H */

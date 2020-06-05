@@ -55,6 +55,11 @@
 #include "gdbsupport/gdb_optional.h"
 #include "source.h"
 #include "cli/cli-style.h"
+#include <map> 
+
+
+extern std::map<unsigned int, BB_INFO*> g_bb_info_map; 
+extern char* g_coverage_module_name;
 
 /* Local functions: */
 
@@ -676,6 +681,35 @@ run_command (const char *args, int from_tty)
 {
   run_command_1 (args, from_tty, RUN_NORMAL);
 }
+
+
+static void
+load_trapfuzzer_info (const char *args, int from_tty)
+{
+  FILE *fp = fopen("/home/hac425/gdb-9.2/build/bb.txt", "rb");
+  int fname_sz = 0;
+  fread(&fname_sz, 4, 1, fp);
+  g_coverage_module_name = (char*)malloc(fname_sz);
+  fread(g_coverage_module_name, fname_sz, 1, fp);
+  
+  BB_INFO tmp = {0};
+
+  while(fread(&tmp, 4 * 3, 1, fp) == 1)
+  {
+    fread(&tmp.instr, tmp.instr_size, 1, fp);
+    BB_INFO* info = (BB_INFO*)malloc(sizeof(BB_INFO));
+    memcpy(info, &tmp, sizeof(BB_INFO));
+    g_bb_info_map[info->voff] = info;
+
+    fprintf_unfiltered (gdb_stdlog, "voff:0x%X\n", info->voff);
+  }
+
+  fclose(fp);
+
+  fprintf_unfiltered (gdb_stdlog, "load_trapfuzzer_info\n");
+}
+
+
 
 /* Start the execution of the program up until the beginning of the main
    program.  */
@@ -3351,6 +3385,11 @@ Start debugged program.\n"
 RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
   add_com_alias ("r", "run", class_run, 1);
+
+
+  c = add_com ("load-trapfuzzer-info", class_run, load_trapfuzzer_info, _("Load trapfuzzer config.\n"RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+
 
   c = add_com ("start", class_run, start_command, _("\
 Start the debugged program stopping at the beginning of the main procedure.\n"

@@ -63,8 +63,24 @@
 #include "arch-utils.h"
 #include "gdbsupport/scope-exit.h"
 #include "gdbsupport/forward-scope-exit.h"
+#include <map> 
+#include <vector>
 
 /* Prototypes for local functions */
+std::map<unsigned int, BB_INFO*> g_bb_info_map; 
+char* g_coverage_module_name = NULL;
+CORE_ADDR g_coverage_module_base = 0x400000;
+CORE_ADDR g_coverage_module_end = 0x603000;
+
+std::vector<unsigned int> g_bb_trace;
+
+enum TRACE_STATUS
+{
+  NORMAL,
+  CRASH,
+  STATUS
+};
+
 
 static void sig_print_info (enum gdb_signal);
 
@@ -5390,6 +5406,54 @@ finish_step_over (struct execution_control_state *ecs)
   return 0;
 }
 
+
+static void save_trace_info(enum TRACE_STATUS status)
+{
+  FILE* fp = fopen("gdb.trace", "w");
+
+  if(status == CRASH)
+  {
+    fprintf (fp, "crash\n");
+  }
+  else
+  {
+    fprintf (fp, "normal\n");
+  }
+
+  unsigned trace_count = g_bb_trace.size();
+  if(trace_count > 0)
+  {
+    int i = 0;
+    for(i = 0; i < trace_count - 1; i++)
+    {
+      fprintf (fp, "0x%X,", g_bb_trace[i]);
+    }
+    g_bb_trace.clear();
+    fprintf (fp, "0x%X", g_bb_trace[i]);
+  }
+
+  fprintf (fp, "\n");
+  fclose(fp);
+
+
+  if(status == CRASH)
+  {
+    fp = fopen("gdb.crash", "w");
+    // 不需要彩色输出
+    std::string cmd_res = execute_command_to_string("i r", 0,  false);
+    fprintf (fp, "%s\n", cmd_res.c_str());
+
+    cmd_res = execute_command_to_string("x/4i $pc", 0,  false);
+    fprintf (fp, "%s\n", cmd_res.c_str());
+
+    cmd_res = execute_command_to_string("bt 4", 0,  false);
+    fprintf (fp, "%s\n", cmd_res.c_str());
+
+    fclose(fp);
+  }
+}
+
+
 /* Come here when the program has stopped with a signal.  */
 
 static void
@@ -5509,6 +5573,34 @@ handle_signal_stop (struct execution_control_state *ecs)
   frame = get_current_frame ();
   gdbarch = get_frame_arch (frame);
 
+  
+  // trapfuzzer patch
+  if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ABRT)
+  {
+    fprintf_unfiltered (gdb_stdlog, "GDB_SIGNAL_ABRT\n");
+    save_trace_info(CRASH);
+    stop_waiting (ecs);
+    return;
+  }
+
+  if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_SEGV)
+  {
+    fprintf_unfiltered (gdb_stdlog, "GDB_SIGNAL_SEGV\n");
+    save_trace_info(CRASH);
+    stop_waiting (ecs);
+    return;
+  }
+
+
+  if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ILL)
+  {
+    fprintf_unfiltered (gdb_stdlog, "GDB_SIGNAL_ILL\n");
+    save_trace_info(CRASH);
+    stop_waiting (ecs);
+    return;
+  }
+  
+
   /* Pull the single step breakpoints out of the target.  */
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_TRAP)
     {
@@ -5519,6 +5611,34 @@ handle_signal_stop (struct execution_control_state *ecs)
       const address_space *aspace = regcache->aspace ();
 
       pc = regcache_read_pc (regcache);
+
+      // location to add trapfuzzer patch
+      if(pc >= g_coverage_module_base && pc <= g_coverage_module_end)
+      {
+        unsigned int voff = pc - g_coverage_module_base;
+
+        // exit point
+        if(voff == 0xC95)
+        {
+          fprintf_unfiltered (gdb_stdlog, "kill program\n");
+          save_trace_info(NORMAL);
+          stop_waiting (ecs);
+          return;
+        }
+
+        if(g_bb_info_map[voff] != NULL)
+        {
+          BB_INFO* info = g_bb_info_map[voff];
+          target_write_memory(pc, info->instr, info->instr_size);
+          fprintf_unfiltered (gdb_stdlog, "patch to %p\n", pc);
+          g_bb_trace.push_back(voff);
+          keep_going (ecs);
+          return;
+        }
+      }
+
+
+      fprintf_unfiltered (gdb_stdlog, "add trapfuzzer patch\n");
 
       /* However, before doing so, if this single-step breakpoint was
 	 actually for another thread, set this thread up for moving
