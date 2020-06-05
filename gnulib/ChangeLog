@@ -1,0 +1,79 @@
+2019-11-15  Tom Tromey  <tromey@adacore.com>
+
+	* aclocal.m4, configure, Makefile.in, import/Makefile.in:
+	Rebuild.
+	* configure.ac: Remove obsolete comment.  Add no-dist.
+
+2019-11-15  Christian Biesinger  <cbiesinger@google.com>
+
+	* Makefile.in: Regenerate.
+	* aclocal.m4: Regenerate.
+	* config.in: Regenerate.
+	* configure: Regenerate.
+	* import/Makefile.am: Update.
+	* import/Makefile.in: Regenerate.
+	* import/m4/gnulib-cache.m4: Update.
+	* import/m4/gnulib-comp.m4: Update.
+	* import/m4/time_r.m4: New file.
+	* import/time_r.c: New file.
+	* update-gnulib.sh: Import time_r.
+
+2019-11-15  Christian Biesinger  <cbiesinger@google.com>
+
+	* Makefile.in: Regenerate.
+	* aclocal.m4: Regenerate.
+	* config.in: Regenerate.
+	* configure: Regenerate.
+	* import/Makefile.am: Update.
+	* import/Makefile.in: Regenerate.
+	* import/extra/config.rpath: New file.
+	* import/glthread/lock.c: New file.
+	* import/glthread/lock.h: New file.
+	* import/glthread/threadlib.c: New file.
+	* import/m4/gnulib-cache.m4: Update.
+	* import/m4/gnulib-comp.m4: Update.
+	* import/m4/lib-ld.m4: New file.
+	* import/m4/lib-link.m4: New file.
+	* import/m4/lib-prefix.m4: New file.
+	* import/m4/lock.m4: New file.
+	* import/m4/strerror_r.m4: New file.
+	* import/m4/threadlib.m4: New file.
+	* import/strerror_r.c: New file.
+	* update-gnulib.sh: Import strerror_r-posix.
+
+2019-11-15  Christian Biesinger  <cbiesinger@google.com>
+
+	* Makefile.am: New file.
+	* Makefile.in: Replace with generated file.
+	* aclocal-m4-deps.mk: Remove.
+	* configure.ac: Use the foreign option for automake and specify
+	the aclocal search path here.
+	* update-gnulib.sh: Don't generate aclocal-m4-deps.mk anymore.
+	Also don't specify the aclocal include path here, now that it
+	is in configure.ac.
+
+2019-11-12  Christian Biesinger  <cbiesinger@google.com>
+
+	* Makefile.in: Fix path to say import/ instead of gnulib/.
+
+2019-11-06  Christian Biesinger  <cbiesinger@google.com>
+
+	* config.in: Regenerate.
+	* import/Makefile.in: Regenerate.
+
+2019-08-28  Gary Benson  <gbenson@redhat.com>
+
+	* patches/0003-Fix-glob-c-Coverity-issues.patch: New file.
+	* update-gnulib.sh: List the above.
+	* import/glob.c: Rebuild.
+
+2019-06-21  Gary Benson  <gbenson@redhat.com>
+
+	* update-gnulib.sh: Adjust paths.
+
+2019-06-14  Tom Tromey  <tom@tromey.com>
+
+	* update-gnulib.sh: Adjust paths.
+	* Makefile.in: Adjust paths.
+	* configure.ac: Adjust paths.  Use ACX_LARGEFILE.
+	* configure: Rebuild.
