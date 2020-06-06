@@ -1700,7 +1700,8 @@ infrun_inferior_created (struct target_ops *ops, int from_tty)
 static void
 infrun_inferior_so_loadded (struct so_list *solib)
 {
-  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] infrun_inferior_so_loadded: %s!\n", solib->so_name);
+  if(g_debug)
+    fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] infrun_inferior_so_loadded: %s!\n", solib->so_name);
 }
 
 
@@ -5963,7 +5964,7 @@ handle_signal_stop (struct execution_control_state *ecs)
       // exit point
       if(is_exit_bb(voff))
       {
-        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb\n");
+        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, voff:0x%X\n", voff);
         save_trace_info(NORMAL);
 
         if(g_in_fuzz_mode)
@@ -5984,7 +5985,10 @@ handle_signal_stop (struct execution_control_state *ecs)
       {
         BB_INFO* info = g_bb_info_map[voff];
         target_write_memory(pc, info->instr, info->instr_size);
-        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch to 0x%X\n", voff);
+
+        if(g_debug)
+          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch to 0x%X\n", voff);
+
         g_bb_trace.push_back(voff);
         keep_going (ecs);
         return;
