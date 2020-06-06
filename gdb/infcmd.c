@@ -56,12 +56,18 @@
 #include "source.h"
 #include "cli/cli-style.h"
 #include <map> 
+#include "infcmd.h"
 
 
 extern std::map<unsigned int, BB_INFO*> g_bb_info_map; 
 extern char* g_coverage_module_name;
 
 /* Local functions: */
+
+extern "C" {
+  #include "infcmd.h"
+}
+
 
 static void until_next_command (int);
 
@@ -676,7 +682,7 @@ run_command_1 (const char *args, int from_tty, enum run_how run_how)
   finish_state.release ();
 }
 
-static void
+void
 run_command (const char *args, int from_tty)
 {
   run_command_1 (args, from_tty, RUN_NORMAL);

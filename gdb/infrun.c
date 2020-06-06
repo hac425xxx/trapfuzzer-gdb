@@ -66,12 +66,20 @@
 #include <map> 
 #include <vector>
 
+extern "C" {
+  #include "infcmd.h"
+}
+
 /* Prototypes for local functions */
 std::map<unsigned int, BB_INFO*> g_bb_info_map; 
 char* g_coverage_module_name = NULL;
 CORE_ADDR g_coverage_module_base = 0x400000;
 CORE_ADDR g_coverage_module_end = 0x603000;
-unsigned int g_patch_to_binary = 1;
+unsigned int g_patch_to_binary = 0;
+unsigned int g_exec_count = 0;
+unsigned int g_in_fuzz_mode = 0;
+
+int g_clt_sock = -1;
 
 std::vector<unsigned int> g_bb_trace;
 
@@ -1595,9 +1603,85 @@ infrun_inferior_exit (struct inferior *inf)
   }
 
   g_bb_trace.clear();
+
+  unsigned int data = 0xdd12; // test finished
+  write(g_clt_sock, &data, sizeof(unsigned int));
+
   inf->displaced_step_state.reset ();
   fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] inferior exit!\n", g_bb_trace.size());
 
+}
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
+int connect_to_tracer_manager()
+{
+    const int port = 12241;
+    const char *ip = "127.0.0.1";
+    unsigned char buf[0x10] = {0};
+
+    g_clt_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_clt_sock < 0)
+    {
+        perror("socket");
+        return 1;
+    }
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = inet_addr(ip);
+    socklen_t addr_len = sizeof(addr);
+
+    int connect_fd = connect(g_clt_sock, (struct sockaddr *)&addr, addr_len);
+    if (connect_fd < 0)
+    {
+        perror("connect");
+        return 2;
+    }
+    return 0;
+}
+
+
+int close_sock_fd()
+{
+    close(g_clt_sock);
+    return 0;
+}
+
+static void
+infrun_inferior_created (struct target_ops *ops, int from_tty)
+{
+
+  FILE* fp = fopen("/home/hac425/code/output/gdb.pid", "w");
+  fprintf(fp, "%d\n", getpid());
+  fclose(fp);
+
+  if(g_clt_sock == -1)
+  {
+    connect_to_tracer_manager();
+  }
+
+  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] infrun_inferior_created!\n");
+
+  unsigned int data = 0xdd11;
+  write(g_clt_sock, &data, sizeof(unsigned int));
+
+
+  int c = read(g_clt_sock, &data, sizeof(unsigned int));
+  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] recv: %d!\n", c);
+
+  if(c != sizeof(unsigned int))
+  {
+    FILE* fp = fopen("/home/hac425/code/output/l.log", "a+");
+    fprintf(fp, "[trapfuzzer] recv: %d!\n", c);
+    fclose(fp);
+    exit(2);
+  }
 }
 
 /* If ON, and the architecture supports it, GDB will use displaced
@@ -5628,28 +5712,40 @@ handle_signal_stop (struct execution_control_state *ecs)
 
   
   // trapfuzzer patch
+  if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_INT)
+  {
+    save_trace_info(NORMAL);
+    run_command ("", 0);
+    prepare_to_wait (ecs);
+    fprintf_unfiltered (gdb_stdlog, "INT count:%d\n", g_exec_count++);
+    return;
+  }
+
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ABRT)
   {
-    fprintf_unfiltered (gdb_stdlog, "GDB_SIGNAL_ABRT\n");
     save_trace_info(CRASH);
-    stop_waiting (ecs);
+    run_command ("", 0);
+    prepare_to_wait (ecs);
+    fprintf_unfiltered (gdb_stdlog, "ABORT count:%d\n", g_exec_count++);
     return;
   }
 
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_SEGV)
   {
-    fprintf_unfiltered (gdb_stdlog, "GDB_SIGNAL_SEGV\n");
     save_trace_info(CRASH);
-    stop_waiting (ecs);
+    run_command ("", 0);
+    prepare_to_wait (ecs);
+    fprintf_unfiltered (gdb_stdlog, "SEGV count:%d\n", g_exec_count++);
     return;
   }
 
 
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ILL)
   {
-    fprintf_unfiltered (gdb_stdlog, "GDB_SIGNAL_ILL\n");
     save_trace_info(CRASH);
-    stop_waiting (ecs);
+    run_command ("", 0);
+    prepare_to_wait (ecs);
+    fprintf_unfiltered (gdb_stdlog, "ILL count:%d\n", g_exec_count++);
     return;
   }
   
@@ -5674,8 +5770,11 @@ handle_signal_stop (struct execution_control_state *ecs)
         if(voff == 0xC95)
         {
           fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb\n");
+          // stop_waiting (ecs);
           save_trace_info(NORMAL);
-          stop_waiting (ecs);
+          run_command ("", 0);
+          prepare_to_wait (ecs);
+          fprintf_unfiltered (gdb_stdlog, "Exit count:%d\n", g_exec_count++);
           return;
         }
 
@@ -9336,6 +9435,9 @@ enabled by default on some platforms."),
   gdb::observers::thread_stop_requested.attach (infrun_thread_stop_requested);
   gdb::observers::thread_exit.attach (infrun_thread_thread_exit);
   gdb::observers::inferior_exit.attach (infrun_inferior_exit);
+  gdb::observers::inferior_created.attach (infrun_inferior_created);
+
+  
 
   /* Explicitly create without lookup, since that tries to create a
      value with a void typed value, and when we get here, gdbarch
