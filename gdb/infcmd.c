@@ -61,6 +61,13 @@
 
 extern std::map<unsigned int, BB_INFO*> g_bb_info_map; 
 extern char* g_coverage_module_name;
+extern unsigned int g_patch_to_binary;
+extern unsigned int g_exec_count;
+extern unsigned int g_in_fuzz_mode;
+extern unsigned int g_debug;
+
+extern CORE_ADDR g_coverage_module_base;
+extern CORE_ADDR g_coverage_module_end;
 
 /* Local functions: */
 
@@ -692,14 +699,24 @@ run_command (const char *args, int from_tty)
 static void
 load_trapfuzzer_info (const char *args, int from_tty)
 {
-  FILE *fp = fopen("/home/hac425/gdb-9.2/build/bb.txt", "rb");
+  if(args == NULL)
+  {
+    fprintf_unfiltered (gdb_stdlog, "load-trapfuzzer-info bb_file\n");
+    return;
+  }
+
+  if(g_debug)
+  {
+    fprintf_unfiltered (gdb_stdlog, "load-trapfuzzer-info %s\n", args);
+  }
+
+  FILE *fp = fopen(args, "rb");
   int fname_sz = 0;
   fread(&fname_sz, 4, 1, fp);
   g_coverage_module_name = (char*)malloc(fname_sz);
   fread(g_coverage_module_name, fname_sz, 1, fp);
   
   BB_INFO tmp = {0};
-
   while(fread(&tmp, 4 * 3, 1, fp) == 1)
   {
     fread(&tmp.instr, tmp.instr_size, 1, fp);
@@ -707,13 +724,66 @@ load_trapfuzzer_info (const char *args, int from_tty)
     memcpy(info, &tmp, sizeof(BB_INFO));
     g_bb_info_map[info->voff] = info;
 
-    fprintf_unfiltered (gdb_stdlog, "voff:0x%X\n", info->voff);
+    if(g_debug)
+      fprintf_unfiltered (gdb_stdlog, "voff:0x%X\n", info->voff);
   }
-
   fclose(fp);
 
-  fprintf_unfiltered (gdb_stdlog, "load_trapfuzzer_info\n");
+  fprintf_unfiltered (gdb_stdlog, "load-trapfuzzer-info done\n");
 }
+
+void
+set_fuzz_config (const char *args, int from_tty)
+{
+  if(args==NULL)
+  {
+    fprintf_unfiltered (gdb_stdlog, "set-fuzz-config fuzzmode,patch_to_binary,debug\n");
+    return;
+  }
+
+  fprintf_unfiltered (gdb_stdlog, "cmdline: set_fuzz_config %s\n", args);
+  if(strstr(args, "fuzzmode") != NULL)
+  {
+    g_in_fuzz_mode ^= 1;
+  }
+
+  if(strstr(args, "patch_to_binary") != NULL)
+  {
+    g_patch_to_binary ^= 1;
+  }
+
+  if(strstr(args, "debug") != NULL)
+  {
+    g_debug ^= 1;
+  }
+
+  fprintf_unfiltered (gdb_stdlog, "g_patch_to_binary:%d, g_in_fuzz_mode:%d, g_debug:%d\n", g_patch_to_binary, g_in_fuzz_mode, g_debug);
+}
+
+void 
+cov_mod_info (const char *args, int from_tty)
+{
+
+  if(args==NULL)
+  {
+    fprintf_unfiltered (gdb_stdlog, "cov-mod-info 0x400000 0x603000\n");
+    return;
+  }
+
+  void* base = 0;
+  void* end = 0;
+	int ret = sscanf(args, "%p %p", &base, &end);
+  if(ret != 2)
+  {
+    fprintf_unfiltered (gdb_stdlog, "cov-mod-info 0x400000 0x603000\n");
+    return;
+  }
+  g_coverage_module_base = (CORE_ADDR)base;
+  g_coverage_module_end = (CORE_ADDR)end;
+
+  fprintf_unfiltered (gdb_stdlog, "g_coverage_module_base:%p, g_coverage_module_end:%p\n", g_coverage_module_base, g_coverage_module_end);
+}
+
 
 
 
@@ -3393,9 +3463,14 @@ RUN_ARGS_HELP));
   add_com_alias ("r", "run", class_run, 1);
 
 
-  c = add_com ("load-trapfuzzer-info", class_run, load_trapfuzzer_info, _("Load trapfuzzer config.\n"RUN_ARGS_HELP));
+  c = add_com ("load-trapfuzzer-info", class_run, load_trapfuzzer_info, _("Load trapfuzzer config.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
 
+  c = add_com ("set-fuzz-config", class_run, set_fuzz_config, _("Set fuzz config.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+
+  c = add_com ("cov-mod-info", class_run, cov_mod_info, _("Set coverage module info.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
 
   c = add_com ("start", class_run, start_command, _("\
 Start the debugged program stopping at the beginning of the main procedure.\n"

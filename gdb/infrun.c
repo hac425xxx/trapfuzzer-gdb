@@ -78,6 +78,7 @@ CORE_ADDR g_coverage_module_end = 0x603000;
 unsigned int g_patch_to_binary = 0;
 unsigned int g_exec_count = 0;
 unsigned int g_in_fuzz_mode = 0;
+unsigned int g_debug = 0;
 
 int g_clt_sock = -1;
 
@@ -1604,8 +1605,12 @@ infrun_inferior_exit (struct inferior *inf)
 
   g_bb_trace.clear();
 
-  unsigned int data = 0xdd12; // test finished
-  write(g_clt_sock, &data, sizeof(unsigned int));
+  if(g_in_fuzz_mode)
+  {
+    unsigned int data = 0xdd12; // test finished
+    write(g_clt_sock, &data, sizeof(unsigned int));
+  }
+
 
   inf->displaced_step_state.reset ();
   fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] inferior exit!\n", g_bb_trace.size());
@@ -1661,27 +1666,31 @@ infrun_inferior_created (struct target_ops *ops, int from_tty)
   fprintf(fp, "%d\n", getpid());
   fclose(fp);
 
-  if(g_clt_sock == -1)
+  if(g_in_fuzz_mode && g_clt_sock == -1)
   {
     connect_to_tracer_manager();
   }
 
   fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] infrun_inferior_created!\n");
 
-  unsigned int data = 0xdd11;
-  write(g_clt_sock, &data, sizeof(unsigned int));
-
-
-  int c = read(g_clt_sock, &data, sizeof(unsigned int));
-  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] recv: %d!\n", c);
-
-  if(c != sizeof(unsigned int))
+  if(g_in_fuzz_mode)
   {
-    FILE* fp = fopen("/home/hac425/code/output/l.log", "a+");
-    fprintf(fp, "[trapfuzzer] recv: %d!\n", c);
-    fclose(fp);
-    exit(2);
+    unsigned int data = 0xdd11;
+    write(g_clt_sock, &data, sizeof(unsigned int));
+
+
+    int c = read(g_clt_sock, &data, sizeof(unsigned int));
+    fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] recv: %d!\n", c);
+
+    if(c != sizeof(unsigned int))
+    {
+      FILE* fp = fopen("/home/hac425/code/output/l.log", "a+");
+      fprintf(fp, "[trapfuzzer] recv: %d!\n", c);
+      fclose(fp);
+      exit(2);
+    }
   }
+
 }
 
 /* If ON, and the architecture supports it, GDB will use displaced
@@ -5715,8 +5724,15 @@ handle_signal_stop (struct execution_control_state *ecs)
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_INT)
   {
     save_trace_info(NORMAL);
-    run_command ("", 0);
-    prepare_to_wait (ecs);
+    if(g_in_fuzz_mode)
+    {
+      run_command ("", 0);
+      prepare_to_wait (ecs);
+    }
+    else
+    {
+      stop_waiting (ecs);
+    }
     fprintf_unfiltered (gdb_stdlog, "INT count:%d\n", g_exec_count++);
     return;
   }
@@ -5724,8 +5740,15 @@ handle_signal_stop (struct execution_control_state *ecs)
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ABRT)
   {
     save_trace_info(CRASH);
-    run_command ("", 0);
-    prepare_to_wait (ecs);
+    if(g_in_fuzz_mode)
+    {
+      run_command ("", 0);
+      prepare_to_wait (ecs);
+    }
+    else
+    {
+      stop_waiting (ecs);
+    }
     fprintf_unfiltered (gdb_stdlog, "ABORT count:%d\n", g_exec_count++);
     return;
   }
@@ -5733,8 +5756,15 @@ handle_signal_stop (struct execution_control_state *ecs)
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_SEGV)
   {
     save_trace_info(CRASH);
-    run_command ("", 0);
-    prepare_to_wait (ecs);
+    if(g_in_fuzz_mode)
+    {
+      run_command ("", 0);
+      prepare_to_wait (ecs);
+    }
+    else
+    {
+      stop_waiting (ecs);
+    }
     fprintf_unfiltered (gdb_stdlog, "SEGV count:%d\n", g_exec_count++);
     return;
   }
@@ -5743,8 +5773,15 @@ handle_signal_stop (struct execution_control_state *ecs)
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ILL)
   {
     save_trace_info(CRASH);
-    run_command ("", 0);
-    prepare_to_wait (ecs);
+    if(g_in_fuzz_mode)
+    {
+      run_command ("", 0);
+      prepare_to_wait (ecs);
+    }
+    else
+    {
+      stop_waiting (ecs);
+    }
     fprintf_unfiltered (gdb_stdlog, "ILL count:%d\n", g_exec_count++);
     return;
   }
@@ -5770,11 +5807,19 @@ handle_signal_stop (struct execution_control_state *ecs)
         if(voff == 0xC95)
         {
           fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb\n");
-          // stop_waiting (ecs);
           save_trace_info(NORMAL);
-          run_command ("", 0);
-          prepare_to_wait (ecs);
-          fprintf_unfiltered (gdb_stdlog, "Exit count:%d\n", g_exec_count++);
+
+          if(g_in_fuzz_mode)
+          {
+            run_command ("", 0);
+            prepare_to_wait (ecs);
+          }
+          else
+          {
+            stop_waiting (ecs);
+          }
+
+          fprintf_unfiltered (gdb_stdlog, "Exit, total count:%d\n", g_exec_count++);
           return;
         }
 
