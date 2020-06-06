@@ -70,8 +70,10 @@ extern unsigned int g_debug;
 extern std::vector<unsigned int> exit_bb_list;
 extern CORE_ADDR g_coverage_module_base;
 extern CORE_ADDR g_coverage_module_end;
-
 extern unsigned int g_fixed_cov_base_addr;
+
+
+std::vector<CORE_ADDR> dl_handle_list;
 
 /* Local functions: */
 
@@ -968,12 +970,60 @@ target_call_dlopen (CORE_ADDR addr)
 
 
 static CORE_ADDR
+target_call_dlclose (CORE_ADDR addr)
+{
+
+  struct objfile *objf;
+  struct value *_libc_dlclose_val = find_function_in_inferior ("__libc_dlclose", &objf);
+  struct value *retval_val;
+  struct gdbarch *gdbarch = get_objfile_arch (objf);
+  CORE_ADDR retval;
+  enum
+    {
+      ARG_ADDR, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
+  
+  retval_val = call_function_by_hand (_libc_dlclose_val, NULL, arg);
+  retval = value_as_address (retval_val);
+  return retval;
+}
+
+static CORE_ADDR
 target_load_library (char* library)
 {
   CORE_ADDR addr = target_call_malloc(strlen(library) + 1);
   target_write_memory(addr, (const gdb_byte *)library, strlen(library) + 1);
   return target_call_dlopen(addr);
 }
+
+void 
+inject_so_cmd (const char *args, int from_tty)
+{
+  if(args == NULL)
+  {
+    fprintf_unfiltered (gdb_stdlog, "inject_so_cmd so_full_path\n");
+    return;
+  }
+
+  CORE_ADDR lib_addr = target_load_library((char*)args);
+  dl_handle_list.push_back(lib_addr);
+  fprintf_unfiltered (gdb_stdlog, "inject_so_cmd(%s):%p\n", args, lib_addr);
+}
+
+
+void 
+unload_so_cmd (const char *args, int from_tty)
+{
+  for(int i=0; i < dl_handle_list.size(); i++)
+  {
+    target_call_dlclose(dl_handle_list[i]);
+  }
+  dl_handle_list.clear();
+}
+
+
 
 void 
 fuzz_dbg_cmd (const char *args, int from_tty)
@@ -3678,6 +3728,14 @@ RUN_ARGS_HELP));
   
   c = add_com ("fuzz-dbg-cmd", class_run, fuzz_dbg_cmd, _("fuzz debug command.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
+  
+  c = add_com ("inject-so", class_run, inject_so_cmd, _("inject so to process.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+
+  c = add_com ("unload-inject-so", class_run, unload_so_cmd, _("unload injected so by inject-so.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+
+
 
   c = add_com ("start", class_run, start_command, _("\
 Start the debugged program stopping at the beginning of the main procedure.\n"
