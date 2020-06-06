@@ -56,6 +56,7 @@
 #include "source.h"
 #include "cli/cli-style.h"
 #include <map> 
+#include <vector>
 #include "infcmd.h"
 
 
@@ -66,8 +67,11 @@ extern unsigned int g_exec_count;
 extern unsigned int g_in_fuzz_mode;
 extern unsigned int g_debug;
 
+extern std::vector<unsigned int> exit_bb_list;
 extern CORE_ADDR g_coverage_module_base;
 extern CORE_ADDR g_coverage_module_end;
+
+extern unsigned int g_fixed_cov_base_addr;
 
 /* Local functions: */
 
@@ -781,10 +785,34 @@ cov_mod_info (const char *args, int from_tty)
   g_coverage_module_base = (CORE_ADDR)base;
   g_coverage_module_end = (CORE_ADDR)end;
 
+  g_fixed_cov_base_addr = 1;
+
   fprintf_unfiltered (gdb_stdlog, "g_coverage_module_base:%p, g_coverage_module_end:%p\n", g_coverage_module_base, g_coverage_module_end);
 }
 
 
+
+void 
+set_exit_bb_list (const char *args, int from_tty)
+{
+
+  if(args==NULL)
+  {
+    fprintf_unfiltered (gdb_stdlog, "set-exit-bb-list 0xaa,0xbb\n");
+    return;
+  }
+
+  CORE_ADDR offset = 0;
+  const char *d = ",";
+  char * p = strtok((char*)args, d);
+  while (p)
+  {
+      sscanf(p, "%p", &offset);
+      printf("add exit bb: %p\n", offset);
+      p = strtok(NULL, d);
+      exit_bb_list.push_back(offset);
+  }
+}
 
 
 /* Start the execution of the program up until the beginning of the main
@@ -3471,6 +3499,10 @@ RUN_ARGS_HELP));
 
   c = add_com ("cov-mod-info", class_run, cov_mod_info, _("Set coverage module info.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
+
+  c = add_com ("set-exit-bb-list", class_run, set_exit_bb_list, _("Set exit bb list.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+  
 
   c = add_com ("start", class_run, start_command, _("\
 Start the debugged program stopping at the beginning of the main procedure.\n"

@@ -73,16 +73,21 @@ extern "C" {
 /* Prototypes for local functions */
 std::map<unsigned int, BB_INFO*> g_bb_info_map; 
 char* g_coverage_module_name = NULL;
-CORE_ADDR g_coverage_module_base = 0x400000;
-CORE_ADDR g_coverage_module_end = 0x603000;
+char g_full_path_of_coverage_module[PATH_MAX] = {0};
+
+CORE_ADDR g_coverage_module_base = 0;
+CORE_ADDR g_coverage_module_end = 0;
 unsigned int g_patch_to_binary = 0;
 unsigned int g_exec_count = 0;
 unsigned int g_in_fuzz_mode = 0;
 unsigned int g_debug = 0;
 
+unsigned int g_fixed_cov_base_addr = 0;  // 标记是否使用固定的base, 比如关闭aslr
+
 int g_clt_sock = -1;
 
 std::vector<unsigned int> g_bb_trace;
+std::vector<unsigned int> exit_bb_list;
 
 enum TRACE_STATUS
 {
@@ -1575,9 +1580,9 @@ unsigned long fuzz_get_file_size(const char *path)
 static void
 infrun_inferior_exit (struct inferior *inf)
 {
-  if(g_patch_to_binary)
+  if(g_patch_to_binary && g_full_path_of_coverage_module[0] != '\x00')
   {
-    char* fpath = "/home/hac425/gdb-9.2/build/test";
+    char* fpath = g_full_path_of_coverage_module;
     int fd = open(fpath, O_RDWR | O_CREAT, 0666);
   
     unsigned int size = fuzz_get_file_size(fpath);
@@ -1662,9 +1667,12 @@ static void
 infrun_inferior_created (struct target_ops *ops, int from_tty)
 {
 
-  FILE* fp = fopen("/home/hac425/code/output/gdb.pid", "w");
+  FILE* fp = fopen("gdb.pid", "w");
   fprintf(fp, "%d\n", getpid());
   fclose(fp);
+
+  if(!g_fixed_cov_base_addr)
+    g_full_path_of_coverage_module[0] = '\x00';
 
   if(g_in_fuzz_mode && g_clt_sock == -1)
   {
@@ -1678,20 +1686,24 @@ infrun_inferior_created (struct target_ops *ops, int from_tty)
     unsigned int data = 0xdd11;
     write(g_clt_sock, &data, sizeof(unsigned int));
 
-
     int c = read(g_clt_sock, &data, sizeof(unsigned int));
-    fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] recv: %d!\n", c);
 
     if(c != sizeof(unsigned int))
     {
-      FILE* fp = fopen("/home/hac425/code/output/l.log", "a+");
-      fprintf(fp, "[trapfuzzer] recv: %d!\n", c);
-      fclose(fp);
+      fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] recv: %d!\n", c);
       exit(2);
     }
   }
 
 }
+
+static void
+infrun_inferior_so_loadded (struct so_list *solib)
+{
+  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] infrun_inferior_so_loadded: %s!\n", solib->so_name);
+}
+
+
 
 /* If ON, and the architecture supports it, GDB will use displaced
    stepping to step over breakpoints.  If OFF, or if the architecture
@@ -5600,6 +5612,148 @@ static void save_trace_info(enum TRACE_STATUS status)
 }
 
 
+
+int is_exit_bb(unsigned int off)
+{
+    for(int i = 0; i <  exit_bb_list.size(); i++)
+    {
+      if(exit_bb_list[i] == off)
+      {
+        return 1;
+      }
+    }
+
+    return 0;
+}
+
+#include <unistd.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <linux/limits.h>
+
+void maps_split_line(
+    char *buf, char *addr1, char *addr2,
+    char *perm, char *offset, char *device, char *inode,
+    char *pathname)
+{
+    //
+    int orig = 0;
+    int i = 0;
+    //addr1
+    while (buf[i] != '-')
+    {
+        addr1[i - orig] = buf[i];
+        i++;
+    }
+    addr1[i] = '\0';
+    i++;
+    //addr2
+    orig = i;
+    while (buf[i] != '\t' && buf[i] != ' ')
+    {
+        addr2[i - orig] = buf[i];
+        i++;
+    }
+    addr2[i - orig] = '\0';
+
+    //perm
+    while (buf[i] == '\t' || buf[i] == ' ')
+        i++;
+    orig = i;
+    while (buf[i] != '\t' && buf[i] != ' ')
+    {
+        perm[i - orig] = buf[i];
+        i++;
+    }
+    perm[i - orig] = '\0';
+    //offset
+    while (buf[i] == '\t' || buf[i] == ' ')
+        i++;
+    orig = i;
+    while (buf[i] != '\t' && buf[i] != ' ')
+    {
+        offset[i - orig] = buf[i];
+        i++;
+    }
+    offset[i - orig] = '\0';
+    //dev
+    while (buf[i] == '\t' || buf[i] == ' ')
+        i++;
+    orig = i;
+    while (buf[i] != '\t' && buf[i] != ' ')
+    {
+        device[i - orig] = buf[i];
+        i++;
+    }
+    device[i - orig] = '\0';
+    //inode
+    while (buf[i] == '\t' || buf[i] == ' ')
+        i++;
+    orig = i;
+    while (buf[i] != '\t' && buf[i] != ' ')
+    {
+        inode[i - orig] = buf[i];
+        i++;
+    }
+    inode[i - orig] = '\0';
+    //pathname
+    pathname[0] = '\0';
+    while (buf[i] == '\t' || buf[i] == ' ')
+        i++;
+    orig = i;
+    while (buf[i] != '\t' && buf[i] != ' ' && buf[i] != '\n')
+    {
+        pathname[i - orig] = buf[i];
+        i++;
+    }
+    pathname[i - orig] = '\0';
+}
+
+int parse_maps(int pid)
+{
+    char maps_path[500];
+    if (pid >= 0)
+    {
+        sprintf(maps_path, "/proc/%d/maps", pid);
+    }
+    else
+    {
+        sprintf(maps_path, "/proc/self/maps");
+    }
+    FILE *file = fopen(maps_path, "r");
+    if (!file)
+    {
+        fprintf(stderr, "cannot open the memory maps, %s\n", strerror(errno));
+        return 1;
+    }
+
+    char buf[PATH_MAX];
+    int c;
+    char addr1[20], addr2[20], perm[8], offset[20], dev[10], inode[30];
+    
+    while (!feof(file))
+    {
+        fgets(buf, PATH_MAX, file);
+        maps_split_line(buf, addr1, addr2, perm, offset, dev, inode, g_full_path_of_coverage_module);
+        // printf("%s-%s %s %s %s %s\t%s\n",addr1,addr2,perm,offset,dev,inode,pathname);
+        if(strstr(g_full_path_of_coverage_module, g_coverage_module_name) != NULL)
+        {
+          unsigned long addr_start=0;
+          sscanf(addr1, "%lx", (long unsigned *)&addr_start);
+          g_coverage_module_base = addr_start;
+          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] coverage_module_base: %p, full_path_of_coverage_module:%s\n", g_coverage_module_base, g_full_path_of_coverage_module);
+          break;
+        }
+        g_full_path_of_coverage_module[0] = '\x00';
+    }
+    fclose(file);
+    return 0;
+}
+
+
 /* Come here when the program has stopped with a signal.  */
 
 static void
@@ -5733,7 +5887,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "INT count:%d\n", g_exec_count++);
+    fprintf_unfiltered (gdb_stdlog, "INT, total exec count:%d\n", g_exec_count++);
     return;
   }
 
@@ -5749,7 +5903,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "ABORT count:%d\n", g_exec_count++);
+    fprintf_unfiltered (gdb_stdlog, "ABORT, total exec count:%d\n", g_exec_count++);
     return;
   }
 
@@ -5765,7 +5919,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "SEGV count:%d\n", g_exec_count++);
+    fprintf_unfiltered (gdb_stdlog, "SEGV, total exec count:%d\n", g_exec_count++);
     return;
   }
 
@@ -5782,7 +5936,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "ILL count:%d\n", g_exec_count++);
+    fprintf_unfiltered (gdb_stdlog, "ILL, total exec count:%d\n", g_exec_count++);
     return;
   }
   
@@ -5798,40 +5952,42 @@ handle_signal_stop (struct execution_control_state *ecs)
 
       pc = regcache_read_pc (regcache);
 
-      // location to add trapfuzzer patch
-      if(pc >= g_coverage_module_base && pc <= g_coverage_module_end)
+      if(!g_fixed_cov_base_addr && g_full_path_of_coverage_module[0] == '\x00' && g_coverage_module_name != NULL)
       {
-        unsigned int voff = pc - g_coverage_module_base;
+        parse_maps(ecs->ptid.pid());
+      }
 
-        // exit point
-        if(voff == 0xC95)
+      // location to add trapfuzzer patch
+      unsigned int voff = pc - g_coverage_module_base;
+
+      // exit point
+      if(is_exit_bb(voff))
+      {
+        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb\n");
+        save_trace_info(NORMAL);
+
+        if(g_in_fuzz_mode)
         {
-          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb\n");
-          save_trace_info(NORMAL);
-
-          if(g_in_fuzz_mode)
-          {
-            run_command ("", 0);
-            prepare_to_wait (ecs);
-          }
-          else
-          {
-            stop_waiting (ecs);
-          }
-
-          fprintf_unfiltered (gdb_stdlog, "Exit, total count:%d\n", g_exec_count++);
-          return;
+          run_command ("", 0);
+          prepare_to_wait (ecs);
+        }
+        else
+        {
+          stop_waiting (ecs);
         }
 
-        if(g_bb_info_map[voff] != NULL)
-        {
-          BB_INFO* info = g_bb_info_map[voff];
-          target_write_memory(pc, info->instr, info->instr_size);
-          fprintf_unfiltered (gdb_stdlog, "patch to %p\n", pc);
-          g_bb_trace.push_back(voff);
-          keep_going (ecs);
-          return;
-        }
+        fprintf_unfiltered (gdb_stdlog, "Exit, total exec count:%d\n", g_exec_count++);
+        return;
+      }
+
+      if(g_bb_info_map[voff] != NULL)
+      {
+        BB_INFO* info = g_bb_info_map[voff];
+        target_write_memory(pc, info->instr, info->instr_size);
+        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch to 0x%X\n", voff);
+        g_bb_trace.push_back(voff);
+        keep_going (ecs);
+        return;
       }
 
 
@@ -9481,6 +9637,7 @@ enabled by default on some platforms."),
   gdb::observers::thread_exit.attach (infrun_thread_thread_exit);
   gdb::observers::inferior_exit.attach (infrun_inferior_exit);
   gdb::observers::inferior_created.attach (infrun_inferior_created);
+  gdb::observers::solib_loaded.attach (infrun_inferior_so_loadded);
 
   
 
