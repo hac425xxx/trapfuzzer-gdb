@@ -80,6 +80,10 @@ extern "C" {
 }
 
 
+extern struct value *call_function_by_hand (struct value *function,
+					    type *default_return_type,
+					    gdb::array_view<value *> args);
+
 static void until_next_command (int);
 
 static void step_1 (int, int, const char *);
@@ -814,6 +818,175 @@ set_exit_bb_list (const char *args, int from_tty)
   }
 }
 
+
+void skip_current_call()
+{
+  struct frame_info *cf = get_selected_frame (NULL);
+  CORE_ADDR caller =  frame_unwind_caller_pc(cf);
+  // fprintf_unfiltered (gdb_stdlog, "caller:%p\n", caller);
+  struct regcache *regcache = get_current_regcache ();
+  regcache_write_pc (regcache, caller);
+}
+
+static CORE_ADDR
+target_call_malloc (CORE_ADDR size)
+{
+  struct objfile *objf;
+  struct value *malloc_val = find_function_in_inferior ("malloc", &objf);
+  struct value *addr_val;
+  struct gdbarch *gdbarch = get_objfile_arch (objf);
+  CORE_ADDR retval;
+  struct value *arg[1];
+
+  arg[0] = value_from_longest (builtin_type (gdbarch)->builtin_unsigned_long, size);
+
+  addr_val = call_function_by_hand (malloc_val, NULL, arg);
+  retval = value_as_address (addr_val);
+  if (retval == (CORE_ADDR) 0)
+    fprintf_unfiltered (gdb_stdlog, "target_call_malloc failed\n");
+  return retval;
+}
+
+static CORE_ADDR
+target_call_mmap (CORE_ADDR size, unsigned prot)
+{
+  struct objfile *objf;
+  struct value *mmap_val = find_function_in_inferior ("mmap64", &objf);
+  struct value *addr_val;
+  struct gdbarch *gdbarch = get_objfile_arch (objf);
+  CORE_ADDR retval;
+  enum
+    {
+      ARG_ADDR, ARG_LENGTH, ARG_PROT, ARG_FLAGS, ARG_FD, ARG_OFFSET, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr,
+				      0);
+  /* Assuming sizeof (unsigned long) == sizeof (size_t).  */
+  arg[ARG_LENGTH] = value_from_ulongest
+		    (builtin_type (gdbarch)->builtin_unsigned_long, size);
+  gdb_assert ((prot & ~(GDB_MMAP_PROT_READ | GDB_MMAP_PROT_WRITE
+			| GDB_MMAP_PROT_EXEC))
+	      == 0);
+  arg[ARG_PROT] = value_from_longest (builtin_type (gdbarch)->builtin_int, prot);
+  arg[ARG_FLAGS] = value_from_longest (builtin_type (gdbarch)->builtin_int, 0x02|0x20);
+  arg[ARG_FD] = value_from_longest (builtin_type (gdbarch)->builtin_int, -1);
+  arg[ARG_OFFSET] = value_from_longest (builtin_type (gdbarch)->builtin_int64,
+					0);
+  addr_val = call_function_by_hand (mmap_val, NULL, arg);
+  retval = value_as_address (addr_val);
+  if (retval == (CORE_ADDR) -1)
+    error (_("Failed inferior mmap call for %s bytes, errno is changed."),
+	   pulongest (size));
+  return retval;
+}
+
+
+static void
+target_call_munmap (CORE_ADDR addr, CORE_ADDR size)
+{
+  struct objfile *objf;
+  struct value *munmap_val = find_function_in_inferior ("munmap", &objf);
+  struct value *retval_val;
+  struct gdbarch *gdbarch = get_objfile_arch (objf);
+  LONGEST retval;
+  enum
+    {
+      ARG_ADDR, ARG_LENGTH, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr,
+				      addr);
+  /* Assuming sizeof (unsigned long) == sizeof (size_t).  */
+  arg[ARG_LENGTH] = value_from_ulongest
+		    (builtin_type (gdbarch)->builtin_unsigned_long, size);
+
+
+  retval_val = call_function_by_hand (munmap_val, NULL, arg);
+  retval = value_as_long (retval_val);
+  if (retval != 0)
+    warning (_("Failed inferior munmap call at %s for %s bytes, "
+	       "errno is changed."),
+	     hex_string (addr), pulongest (size));
+}
+
+
+static void
+target_call_mprotect (CORE_ADDR addr, CORE_ADDR size, unsigned prot)
+{
+  struct objfile *objf;
+  struct value *mprotect_val = find_function_in_inferior ("mprotect", &objf);
+  struct value *retval_val;
+  struct gdbarch *gdbarch = get_objfile_arch (objf);
+  LONGEST retval;
+  enum
+    {
+      ARG_ADDR, ARG_LENGTH, ARG_PROT, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr,
+				      addr);
+  /* Assuming sizeof (unsigned long) == sizeof (size_t).  */
+  arg[ARG_LENGTH] = value_from_ulongest
+		    (builtin_type (gdbarch)->builtin_unsigned_long, size);
+
+  arg[ARG_PROT] = value_from_longest (builtin_type (gdbarch)->builtin_int, prot);
+  
+  retval_val = call_function_by_hand (mprotect_val, NULL, arg);
+  retval = value_as_long (retval_val);
+  if (retval != 0)
+    warning (_("Failed inferior mprotect call at %s for %s bytes, "
+	       "errno is changed."),
+	     hex_string (addr), pulongest (size));
+}
+
+static CORE_ADDR
+target_call_dlopen (CORE_ADDR addr)
+{
+
+  struct objfile *objf;
+  struct value *_libc_dlopen_mode_val = find_function_in_inferior ("__libc_dlopen_mode", &objf);
+  struct value *retval_val;
+  struct gdbarch *gdbarch = get_objfile_arch (objf);
+  CORE_ADDR retval;
+  enum
+    {
+      ARG_ADDR, ARG_MODE, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
+  arg[ARG_MODE] = value_from_longest (builtin_type (gdbarch)->builtin_int, 0x80000001);
+  
+  retval_val = call_function_by_hand (_libc_dlopen_mode_val, NULL, arg);
+  retval = value_as_address (retval_val);
+  return retval;
+}
+
+
+static CORE_ADDR
+target_load_library (char* library)
+{
+  CORE_ADDR addr = target_call_malloc(strlen(library) + 1);
+  target_write_memory(addr, (const gdb_byte *)library, strlen(library) + 1);
+  return target_call_dlopen(addr);
+}
+
+void 
+fuzz_dbg_cmd (const char *args, int from_tty)
+{
+  skip_current_call();
+  CORE_ADDR addr = target_call_malloc(0x20);
+  CORE_ADDR mmap_addr = target_call_mmap(0x1000 * 3, 7);
+  fprintf_unfiltered (gdb_stdlog, "target_call_malloc return:%p\n", addr);
+  fprintf_unfiltered (gdb_stdlog, "target_call_mmap return:%p\n", mmap_addr);
+  target_call_mprotect(mmap_addr + 0x1000, 0x1000, 0);
+  CORE_ADDR lib_addr = target_load_library("/lib/x86_64-linux-gnu/libz.so.1.2.8");
+  fprintf_unfiltered (gdb_stdlog, "lib_addr:%p\n", lib_addr);
+}
 
 /* Start the execution of the program up until the beginning of the main
    program.  */
@@ -3503,6 +3676,8 @@ RUN_ARGS_HELP));
   c = add_com ("set-exit-bb-list", class_run, set_exit_bb_list, _("Set exit bb list.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
   
+  c = add_com ("fuzz-dbg-cmd", class_run, fuzz_dbg_cmd, _("fuzz debug command.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
 
   c = add_com ("start", class_run, start_command, _("\
 Start the debugged program stopping at the beginning of the main procedure.\n"

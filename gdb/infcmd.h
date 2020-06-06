@@ -21,4 +21,5 @@
 extern "C" {
   void run_command (const char *args, int from_tty);
 }
+
 #endif
