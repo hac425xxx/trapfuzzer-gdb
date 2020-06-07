@@ -89,6 +89,7 @@ int g_clt_sock = -1;
 std::vector<unsigned int> g_bb_trace;
 std::vector<unsigned int> exit_bb_list;
 std::vector<MEM_BRK_INFO*> mem_brk_info_list;
+extern std::vector<CORE_ADDR> dl_handle_list;;
 
 enum TRACE_STATUS
 {
@@ -1578,6 +1579,9 @@ unsigned long fuzz_get_file_size(const char *path)
 	return filesize;
 }
 
+
+
+
 static void
 infrun_inferior_exit (struct inferior *inf)
 {
@@ -1610,6 +1614,15 @@ infrun_inferior_exit (struct inferior *inf)
   }
 
   g_bb_trace.clear();
+
+  for(int i=0; i < mem_brk_info_list.size(); i++)
+  {
+    MEM_BRK_INFO* info = mem_brk_info_list[i];
+    free(mem_brk_info_list[i]);
+  }
+  
+  mem_brk_info_list.clear();
+  dl_handle_list.clear();
 
   if(g_in_fuzz_mode)
   {
@@ -1663,6 +1676,8 @@ int close_sock_fd()
     close(g_clt_sock);
     return 0;
 }
+
+
 
 static void
 infrun_inferior_created (struct target_ops *ops, int from_tty)
@@ -6025,7 +6040,7 @@ handle_signal_stop (struct execution_control_state *ecs)
         MEM_BRK_INFO* mbi = g_pre_mem_brk_info;
         g_pre_mem_brk_info = NULL;
         target_call_mprotect(mbi->page_address, mbi->page_size, mbi->prot);
-        ecs->event_thread->stepping_over_watchpoint = 1;
+        ecs->event_thread->stepping_over_watchpoint = 0;
 
         if(g_need_stop)
         {
