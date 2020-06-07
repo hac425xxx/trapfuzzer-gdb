@@ -851,6 +851,27 @@ target_call_malloc (CORE_ADDR size)
   return retval;
 }
 
+void
+target_call_free (CORE_ADDR addr)
+{
+  struct objfile *objf;
+  struct value *free_val = find_function_in_inferior ("free", &objf);
+  struct value *retval_val;
+  struct gdbarch *gdbarch = get_objfile_arch (objf);
+  LONGEST retval;
+  enum
+    {
+      ARG_ADDR, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
+  retval_val = call_function_by_hand (free_val, NULL, arg);
+  retval = value_as_long (retval_val);
+  if (retval != 0)
+    warning (_("Failed target_call_free at %s for %s bytes, "));
+}
+
+
 CORE_ADDR
 target_call_mmap (CORE_ADDR size, unsigned prot)
 {
@@ -997,7 +1018,9 @@ target_load_library (char* library)
 {
   CORE_ADDR addr = target_call_malloc(strlen(library) + 1);
   target_write_memory(addr, (const gdb_byte *)library, strlen(library) + 1);
-  return target_call_dlopen(addr);
+  CORE_ADDR so_handle = target_call_dlopen(addr);
+  target_call_free(addr);
+  return so_handle;
 }
 
 void 
