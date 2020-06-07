@@ -1055,26 +1055,38 @@ unload_so_cmd (const char *args, int from_tty)
 using json = nlohmann::json;
 
 
-void parse_json_file(char* fpath)
+void parse_json_file(char *fpath)
 {
-  // read a JSON file
-  std::ifstream i(fpath);
-  json j;
-  i >> j;
+    // read a JSON file
+    std::ifstream i(fpath);
+    json j;
+    i >> j;
 
-  unsigned int sz = j.size();
-  fprintf_unfiltered (gdb_stdlog, "sz:%d\n", sz);
-
-  for (int i = 0; i < sz; i++)
-  {
-      json item = j[i];
-      std::cout << item["name"].get<std::string>() << std::endl;
-      for (auto d = item.begin(); d != item.end(); ++d)
-      {
-          std::cout << d.key() << ": " << d.value() << std::endl;
-      }
-  }
-
+    json arg_count = j["argument_count"];
+    json arg_list = j["arguments"];
+    unsigned int sz = arg_list.size();
+    for (int i = 0; i < sz; i++)
+    {
+        json item = arg_list[i];
+        std::string name = item["name"].get<std::string>();
+        std::string type = item["type"].get<std::string>();
+        if (type == "struct")
+        {
+            std::string member_count = item["member_count"].get<std::string>();
+            json member_list = item["member_list"];
+            for (json::iterator m = member_list.begin(); m != member_list.end(); ++m)
+            {   
+                json mb = *m;
+                std::string sub_type = mb["type"].get<std::string>();
+                printf("sub_type:%s\n", sub_type.c_str());
+            }
+        }
+        else
+        {
+            std::string value = item["value"].get<std::string>();
+            printf("name:%s, type:%s, value:%s\n", name.c_str(), type.c_str(), value.c_str());
+        }
+    }
 }
 
 
