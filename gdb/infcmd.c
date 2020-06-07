@@ -71,7 +71,7 @@ extern std::vector<unsigned int> exit_bb_list;
 extern CORE_ADDR g_coverage_module_base;
 extern CORE_ADDR g_coverage_module_end;
 extern unsigned int g_fixed_cov_base_addr;
-
+extern std::vector<MEM_BRK_INFO*> mem_brk_info_list;
 
 std::vector<CORE_ADDR> dl_handle_list;
 
@@ -1097,6 +1097,72 @@ fuzz_dbg_cmd (const char *args, int from_tty)
   regcache_raw_write_unsigned(regcache, 0, 0xdeadbeef);
 
   parse_json_file("/home/hac425/gdb-9.2/build/test.json");
+}
+
+#include <sys/mman.h>
+
+#define FUZZ_PAGE_SIZE 0x1000
+
+void 
+membrk_cmd (const char *args, int from_tty)
+{
+  if(args == NULL)
+  {
+    fprintf_unfiltered (gdb_stdlog, "membrk addr size rw\n");
+    return;
+  }
+
+  CORE_ADDR addr = 0;
+  char prot[10] = {0};
+  unsigned int sz = 0;
+  sscanf(args, "%p 0x%x %3s", &addr, &sz, prot);
+  fprintf_unfiltered (gdb_stdlog, "membrk %p 0x%x %s\n", addr, sz, prot);
+
+  MEM_BRK_INFO* info = (MEM_BRK_INFO*) malloc(sizeof(MEM_BRK_INFO));
+  info->prot = 7;
+
+  for(int i=0; i<3; i++)
+  {
+    switch(prot[i])
+    {
+      case 'r':
+        info->prot &= ~PROT_READ;
+        break;
+      case 'w':
+        info->prot &= ~PROT_WRITE;
+        break;
+      case 'x':
+        info->prot &= ~PROT_EXEC;
+        break;
+    }
+  }
+
+  fprintf_unfiltered (gdb_stdlog, "prot:%d\n", info->prot);
+
+  unsigned int pad_size = FUZZ_PAGE_SIZE - (sz % FUZZ_PAGE_SIZE);
+  unsigned int page_len = sz + pad_size;
+  CORE_ADDR page_addr = addr - (addr % FUZZ_PAGE_SIZE);
+
+  target_call_mprotect(page_addr, page_len, info->prot);
+
+  info->address = addr;
+  info->length = sz;
+  info->page_address = page_addr;
+  info->page_size = page_len;
+  mem_brk_info_list.push_back(info);
+
+}
+
+void 
+del_mem_brk_cmd (const char *args, int from_tty)
+{
+  for(int i=0; i < mem_brk_info_list.size(); i++)
+  {
+    MEM_BRK_INFO* info = mem_brk_info_list[i];
+    target_call_mprotect(info->page_address, info->page_size, 7);
+    free(mem_brk_info_list[i]);
+  }
+  mem_brk_info_list.clear();
 }
 
 /* Start the execution of the program up until the beginning of the main
@@ -3790,6 +3856,12 @@ RUN_ARGS_HELP));
   c = add_com ("fuzz-dbg-cmd", class_run, fuzz_dbg_cmd, _("fuzz debug command.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
   
+  c = add_com ("membrk", class_run, membrk_cmd, _("set memory breakpoint.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+
+  c = add_com ("del-mem-brk", class_run, del_mem_brk_cmd, _("del mem brk.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+
   c = add_com ("inject-so", class_run, inject_so_cmd, _("inject so to process.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
 

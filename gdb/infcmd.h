@@ -22,4 +22,12 @@ extern "C" {
   void run_command (const char *args, int from_tty);
 }
 
+typedef struct _MEM_BRK_INFO{
+  CORE_ADDR address;
+  unsigned int length;
+  unsigned int prot;
+  CORE_ADDR page_address;
+  unsigned int page_size;
+}MEM_BRK_INFO;
+
 #endif

@@ -88,6 +88,7 @@ int g_clt_sock = -1;
 
 std::vector<unsigned int> g_bb_trace;
 std::vector<unsigned int> exit_bb_list;
+std::vector<MEM_BRK_INFO*> mem_brk_info_list;
 
 enum TRACE_STATUS
 {
@@ -5754,6 +5755,27 @@ int parse_maps(int pid)
     return 0;
 }
 
+MEM_BRK_INFO * get_mem_brk_info_by_addr(CORE_ADDR addr)
+{
+    MEM_BRK_INFO * ret = NULL;
+    for(int i = 0; i <  mem_brk_info_list.size(); i++)
+    {
+      CORE_ADDR start = mem_brk_info_list[i]->page_address - 4;
+      CORE_ADDR end = mem_brk_info_list[i]->page_address + mem_brk_info_list[i]->page_size + 4;
+
+      if(addr >= start && addr <= end)
+      {
+        ret = mem_brk_info_list[i];
+      }
+    }
+    return ret;
+}
+
+void
+target_call_mprotect (CORE_ADDR addr, CORE_ADDR size, unsigned prot);
+
+unsigned int g_need_stop = 0;
+MEM_BRK_INFO* g_pre_mem_brk_info = NULL;
 
 /* Come here when the program has stopped with a signal.  */
 
@@ -5910,19 +5932,61 @@ handle_signal_stop (struct execution_control_state *ecs)
 
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_SEGV)
   {
-    save_trace_info(CRASH);
-    if(g_in_fuzz_mode)
-    {
-      run_command ("", 0);
-      prepare_to_wait (ecs);
+
+    CORE_ADDR access = 0;
+    MEM_BRK_INFO* info = NULL;
+
+    try
+      {
+        access = parse_and_eval_long ("$_siginfo._sifields._sigfault.si_addr");
+        fprintf_unfiltered (gdb_stdlog, "access:%p\n", access);
+        info = get_mem_brk_info_by_addr(access);
+        if(info != NULL)
+        {
+          if(access >= info->address - 4 && access <= info->address + info->length + 4)
+          {
+            fprintf_unfiltered (gdb_stdlog, "catch access %p, size:%d\n", info->address, info->length);
+            target_call_mprotect(info->page_address, info->page_size, 7);
+            ecs->event_thread->suspend.stop_signal = GDB_SIGNAL_TRAP; // nopass to program
+            g_need_stop = 1;
+            g_pre_mem_brk_info = info;
+            ecs->event_thread->stepping_over_watchpoint = 1;
+            keep_going (ecs);
+            return;
+          }
+          else
+          {
+            fprintf_unfiltered (gdb_stdlog, "no catch\n");
+            target_call_mprotect(info->page_address, info->page_size, 7);
+            ecs->event_thread->suspend.stop_signal = GDB_SIGNAL_TRAP; // nopass to program
+            g_need_stop = 0;
+            g_pre_mem_brk_info = info;
+            ecs->event_thread->stepping_over_watchpoint = 1;
+            keep_going (ecs);
+            return;
+          }
+
+        }
+        
+      }
+    catch (const gdb_exception &exception)
+      {
+        ;
+      }
+
+      save_trace_info(CRASH);
+      if(g_in_fuzz_mode)
+      {
+        run_command ("", 0);
+        prepare_to_wait (ecs);
+      }
+      else
+      {
+        stop_waiting (ecs);
+      }
+      fprintf_unfiltered (gdb_stdlog, "SEGV, total exec count:%d\n", g_exec_count++);
+      return;
     }
-    else
-    {
-      stop_waiting (ecs);
-    }
-    fprintf_unfiltered (gdb_stdlog, "SEGV, total exec count:%d\n", g_exec_count++);
-    return;
-  }
 
 
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ILL)
@@ -5945,6 +6009,7 @@ handle_signal_stop (struct execution_control_state *ecs)
   /* Pull the single step breakpoints out of the target.  */
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_TRAP)
     {
+
       struct regcache *regcache;
       CORE_ADDR pc;
 
@@ -5952,6 +6017,29 @@ handle_signal_stop (struct execution_control_state *ecs)
       const address_space *aspace = regcache->aspace ();
 
       pc = regcache_read_pc (regcache);
+
+
+      if(g_pre_mem_brk_info != NULL)
+      {
+        
+        MEM_BRK_INFO* mbi = g_pre_mem_brk_info;
+        g_pre_mem_brk_info = NULL;
+        target_call_mprotect(mbi->page_address, mbi->page_size, mbi->prot);
+        ecs->event_thread->stepping_over_watchpoint = 1;
+
+        if(g_need_stop)
+        {
+          stop_waiting (ecs);
+        }
+        else
+        {
+          keep_going (ecs);
+        }
+
+        g_need_stop = 0;
+        return;
+      }
+
 
       if(!g_fixed_cov_base_addr && g_full_path_of_coverage_module[0] == '\x00' && g_coverage_module_name != NULL)
       {
