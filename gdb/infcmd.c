@@ -1156,13 +1156,34 @@ membrk_cmd (const char *args, int from_tty)
 void 
 del_mem_brk_cmd (const char *args, int from_tty)
 {
+  if(args == NULL)
+  {
+    for(int i=0; i < mem_brk_info_list.size(); i++)
+    {
+      MEM_BRK_INFO* info = mem_brk_info_list[i];
+      target_call_mprotect(info->page_address, info->page_size, 7);
+      free(mem_brk_info_list[i]);
+    }
+    mem_brk_info_list.clear();
+  }
+  else
+  {
+    unsigned int idx = atoi(args);
+    MEM_BRK_INFO* info = mem_brk_info_list[idx];
+    fprintf_unfiltered (gdb_stdlog, "delete mem brk %d\n", idx);
+    mem_brk_info_list.erase(mem_brk_info_list.begin() + idx);
+    free(info);
+  }
+}
+
+void 
+list_mem_brk_cmd (const char *args, int from_tty)
+{
   for(int i=0; i < mem_brk_info_list.size(); i++)
   {
     MEM_BRK_INFO* info = mem_brk_info_list[i];
-    target_call_mprotect(info->page_address, info->page_size, 7);
-    free(mem_brk_info_list[i]);
+    fprintf_unfiltered (gdb_stdlog, "mem_brk id:%d, range: %p--%p, current prot: %d\n", i, info->address, info->address + info->length, info->prot);
   }
-  mem_brk_info_list.clear();
 }
 
 /* Start the execution of the program up until the beginning of the main
@@ -3861,6 +3882,10 @@ RUN_ARGS_HELP));
 
   c = add_com ("del-mem-brk", class_run, del_mem_brk_cmd, _("del mem brk.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);
+
+  c = add_com ("list-mem-brk", class_run, list_mem_brk_cmd, _("list mem brk.\n" RUN_ARGS_HELP));
+  set_cmd_completer (c, filename_completer);
+  
 
   c = add_com ("inject-so", class_run, inject_so_cmd, _("inject so to process.\n" RUN_ARGS_HELP));
   set_cmd_completer (c, filename_completer);

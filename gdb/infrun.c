@@ -1620,7 +1620,7 @@ infrun_inferior_exit (struct inferior *inf)
     MEM_BRK_INFO* info = mem_brk_info_list[i];
     free(mem_brk_info_list[i]);
   }
-  
+
   mem_brk_info_list.clear();
   dl_handle_list.clear();
 
@@ -5954,13 +5954,16 @@ handle_signal_stop (struct execution_control_state *ecs)
     try
       {
         access = parse_and_eval_long ("$_siginfo._sifields._sigfault.si_addr");
-        fprintf_unfiltered (gdb_stdlog, "access:%p\n", access);
+        CORE_ADDR pc = regcache_read_pc (get_thread_regcache (ecs->event_thread));
+        if(g_debug)
+          fprintf_unfiltered (gdb_stdlog, "pc:%p, access:%p\n", pc, access);
+
         info = get_mem_brk_info_by_addr(access);
         if(info != NULL)
         {
           if(access >= info->address - 4 && access <= info->address + info->length + 4)
           {
-            fprintf_unfiltered (gdb_stdlog, "catch access %p, size:%d\n", info->address, info->length);
+            fprintf_unfiltered (gdb_stdlog, "catch access %p, size:0x%x\n", info->address, info->length);
             target_call_mprotect(info->page_address, info->page_size, 7);
             ecs->event_thread->suspend.stop_signal = GDB_SIGNAL_TRAP; // nopass to program
             g_need_stop = 1;
@@ -5971,7 +5974,8 @@ handle_signal_stop (struct execution_control_state *ecs)
           }
           else
           {
-            fprintf_unfiltered (gdb_stdlog, "no catch\n");
+            if(g_debug)
+              fprintf_unfiltered (gdb_stdlog, "no catch\n");
             target_call_mprotect(info->page_address, info->page_size, 7);
             ecs->event_thread->suspend.stop_signal = GDB_SIGNAL_TRAP; // nopass to program
             g_need_stop = 0;
@@ -5999,6 +6003,7 @@ handle_signal_stop (struct execution_control_state *ecs)
       {
         stop_waiting (ecs);
       }
+      
       fprintf_unfiltered (gdb_stdlog, "SEGV, total exec count:%d\n", g_exec_count++);
       return;
     }
@@ -6039,8 +6044,11 @@ handle_signal_stop (struct execution_control_state *ecs)
         
         MEM_BRK_INFO* mbi = g_pre_mem_brk_info;
         g_pre_mem_brk_info = NULL;
-        target_call_mprotect(mbi->page_address, mbi->page_size, mbi->prot);
         ecs->event_thread->stepping_over_watchpoint = 0;
+
+        target_call_mprotect(mbi->page_address, mbi->page_size, mbi->prot);
+        if(g_debug)
+          fprintf_unfiltered (gdb_stdlog, "mem brk retore single_step, pc:%p\n", pc);
 
         if(g_need_stop)
         {
