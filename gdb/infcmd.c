@@ -828,9 +828,11 @@ void skip_current_call()
   // fprintf_unfiltered (gdb_stdlog, "caller:%p\n", caller);
   struct regcache *regcache = get_current_regcache ();
   regcache_write_pc (regcache, caller);
+
+
 }
 
-static CORE_ADDR
+CORE_ADDR
 target_call_malloc (CORE_ADDR size)
 {
   struct objfile *objf;
@@ -849,7 +851,7 @@ target_call_malloc (CORE_ADDR size)
   return retval;
 }
 
-static CORE_ADDR
+CORE_ADDR
 target_call_mmap (CORE_ADDR size, unsigned prot)
 {
   struct objfile *objf;
@@ -885,7 +887,7 @@ target_call_mmap (CORE_ADDR size, unsigned prot)
 }
 
 
-static void
+void
 target_call_munmap (CORE_ADDR addr, CORE_ADDR size)
 {
   struct objfile *objf;
@@ -915,7 +917,7 @@ target_call_munmap (CORE_ADDR addr, CORE_ADDR size)
 }
 
 
-static void
+void
 target_call_mprotect (CORE_ADDR addr, CORE_ADDR size, unsigned prot)
 {
   struct objfile *objf;
@@ -945,7 +947,7 @@ target_call_mprotect (CORE_ADDR addr, CORE_ADDR size, unsigned prot)
 	     hex_string (addr), pulongest (size));
 }
 
-static CORE_ADDR
+CORE_ADDR
 target_call_dlopen (CORE_ADDR addr)
 {
 
@@ -969,7 +971,7 @@ target_call_dlopen (CORE_ADDR addr)
 }
 
 
-static CORE_ADDR
+CORE_ADDR
 target_call_dlclose (CORE_ADDR addr)
 {
 
@@ -990,7 +992,7 @@ target_call_dlclose (CORE_ADDR addr)
   return retval;
 }
 
-static CORE_ADDR
+CORE_ADDR
 target_load_library (char* library)
 {
   CORE_ADDR addr = target_call_malloc(strlen(library) + 1);
@@ -1024,6 +1026,34 @@ unload_so_cmd (const char *args, int from_tty)
 }
 
 
+#include "nlohmann/json.hpp"
+#include <iostream>
+#include <fstream>
+using json = nlohmann::json;
+
+
+void parse_json_file(char* fpath)
+{
+  // read a JSON file
+  std::ifstream i(fpath);
+  json j;
+  i >> j;
+
+  unsigned int sz = j.size();
+  fprintf_unfiltered (gdb_stdlog, "sz:%d\n", sz);
+
+  for (int i = 0; i < sz; i++)
+  {
+      json item = j[i];
+      std::cout << item["name"].get<std::string>() << std::endl;
+      for (auto d = item.begin(); d != item.end(); ++d)
+      {
+          std::cout << d.key() << ": " << d.value() << std::endl;
+      }
+  }
+
+}
+
 
 void 
 fuzz_dbg_cmd (const char *args, int from_tty)
@@ -1036,6 +1066,14 @@ fuzz_dbg_cmd (const char *args, int from_tty)
   target_call_mprotect(mmap_addr + 0x1000, 0x1000, 0);
   CORE_ADDR lib_addr = target_load_library("/lib/x86_64-linux-gnu/libz.so.1.2.8");
   fprintf_unfiltered (gdb_stdlog, "lib_addr:%p\n", lib_addr);
+
+  ULONGEST rax_value = 0;
+  struct regcache *regcache = get_current_regcache ();
+  regcache_raw_read_unsigned(regcache, 0, &rax_value);
+  fprintf_unfiltered (gdb_stdlog, "rax:%p\n", rax_value);
+  regcache_raw_write_unsigned(regcache, 0, 0xdeadbeef);
+
+  parse_json_file("/home/hac425/gdb-9.2/build/test.json");
 }
 
 /* Start the execution of the program up until the beginning of the main
