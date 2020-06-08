@@ -82,7 +82,7 @@ unsigned int g_exec_count = 0;
 unsigned int g_in_fuzz_mode = 0;
 unsigned int g_debug = 0;
 
-unsigned int g_fixed_cov_base_addr = 0;  // ±Íº« «∑Ò π”√πÃ∂®µƒbase, ±»»Áπÿ±’aslr
+unsigned int g_fixed_cov_base_addr = 0;  // Ê†áËÆ∞ÊòØÂê¶‰ΩøÁî®Âõ∫ÂÆöÁöÑbase, ÊØîÂ¶ÇÂÖ≥Èó≠aslr
 
 int g_clt_sock = -1;
 
@@ -1594,7 +1594,9 @@ infrun_inferior_exit (struct inferior *inf)
     size = FUZZ_PAGE_SIZE - (size % FUZZ_PAGE_SIZE) + size;
 
     unsigned char* file_content = (unsigned char*)mmap(0, size, PROT_READ|PROT_WRITE, MAP_FILE|MAP_SHARED, fd, 0);
-    fprintf_unfiltered (gdb_stdlog, "addr:%p, size:0x%x\n", file_content, size);
+
+    if(g_debug)
+      fprintf_unfiltered (gdb_stdlog, "addr:%p, size:0x%x\n", file_content, size);
 
     if(file_content != (unsigned char*)-1)
     {
@@ -1608,8 +1610,8 @@ infrun_inferior_exit (struct inferior *inf)
 
       munmap(file_content, size);
       close(fd);
-
-      fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch %d bytes\n", g_bb_trace.size());
+      if(g_debug)
+        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch %d bytes\n", g_bb_trace.size());
     }
   }
 
@@ -1632,8 +1634,9 @@ infrun_inferior_exit (struct inferior *inf)
 
 
   inf->displaced_step_state.reset ();
-  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] inferior exit!\n", g_bb_trace.size());
 
+  if(g_debug)
+    fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] inferior exit!\n", g_bb_trace.size());
 }
 
 #include <sys/types.h>
@@ -1683,6 +1686,7 @@ static void
 infrun_inferior_created (struct target_ops *ops, int from_tty)
 {
 
+  srand(time(0));
   FILE* fp = fopen("gdb.pid", "w");
   fprintf(fp, "%d\n", getpid());
   fclose(fp);
@@ -1695,7 +1699,8 @@ infrun_inferior_created (struct target_ops *ops, int from_tty)
     connect_to_tracer_manager();
   }
 
-  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] infrun_inferior_created!\n");
+  if(g_debug)
+    fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] infrun_inferior_created!\n");
 
   if(g_in_fuzz_mode)
   {
@@ -5582,6 +5587,10 @@ finish_step_over (struct execution_control_state *ecs)
 
 static void save_trace_info(enum TRACE_STATUS status)
 {
+
+  if(!g_in_fuzz_mode)
+    return;
+
   FILE* fp = fopen("gdb.trace", "w");
 
   if(status == CRASH)
@@ -5612,7 +5621,7 @@ static void save_trace_info(enum TRACE_STATUS status)
   if(status == CRASH)
   {
     fp = fopen("gdb.crash", "w");
-    // ≤ª–Ë“™≤ …´ ‰≥ˆ
+    // ‰∏çÈúÄË¶ÅÂΩ©Ëâ≤ËæìÂá∫
     std::string cmd_res = execute_command_to_string("i r", 0,  false);
     fprintf (fp, "%s\n", cmd_res.c_str());
 
@@ -5761,7 +5770,9 @@ int parse_maps(int pid)
           unsigned long addr_start=0;
           sscanf(addr1, "%lx", (long unsigned *)&addr_start);
           g_coverage_module_base = addr_start;
-          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] coverage_module_base: %p, full_path_of_coverage_module:%s\n", g_coverage_module_base, g_full_path_of_coverage_module);
+
+          if(g_debug)
+            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] coverage_module_base: %p, full_path_of_coverage_module:%s\n", g_coverage_module_base, g_full_path_of_coverage_module);
           break;
         }
         g_full_path_of_coverage_module[0] = '\x00';
@@ -5770,13 +5781,13 @@ int parse_maps(int pid)
     return 0;
 }
 
-MEM_BRK_INFO * get_mem_brk_info_by_addr(CORE_ADDR addr)
+MEM_BRK_INFO * get_mem_brk_info_by_addr(CORE_ADDR addr, unsigned int instr_access_size)
 {
     MEM_BRK_INFO * ret = NULL;
     for(int i = 0; i <  mem_brk_info_list.size(); i++)
     {
-      CORE_ADDR start = mem_brk_info_list[i]->page_address - 4;
-      CORE_ADDR end = mem_brk_info_list[i]->page_address + mem_brk_info_list[i]->page_size + 4;
+      CORE_ADDR start = mem_brk_info_list[i]->page_address - instr_access_size;
+      CORE_ADDR end = mem_brk_info_list[i]->page_address + mem_brk_info_list[i]->page_size + instr_access_size;
 
       if(addr >= start && addr <= end)
       {
@@ -5925,7 +5936,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "INT, total exec count:%d\n", g_exec_count++);
+    fprintf_unfiltered (gdb_stdlog, "SIGINT, total exec count:%d\n", g_exec_count++);
     return;
   }
 
@@ -5955,15 +5966,18 @@ handle_signal_stop (struct execution_control_state *ecs)
       {
         access = parse_and_eval_long ("$_siginfo._sifields._sigfault.si_addr");
         CORE_ADDR pc = regcache_read_pc (get_thread_regcache (ecs->event_thread));
+        CORE_ADDR instr_access_size = 4;  // ÁõÆÂâçËÆæÁΩÆ‰∏∫‰∏Ä‰∏™Âõ∫ÂÆöÂÄºÔºåÂèØËÉΩ‰ºöÊúâËØØÊä•
+
         if(g_debug)
           fprintf_unfiltered (gdb_stdlog, "pc:%p, access:%p\n", pc, access);
 
-        info = get_mem_brk_info_by_addr(access);
+        info = get_mem_brk_info_by_addr(access, instr_access_size);
         if(info != NULL)
         {
-          if(access >= info->address - 4 && access <= info->address + info->length + 4)
+         
+          if(access >= info->address - instr_access_size && access <= info->address + info->length + instr_access_size)
           {
-            fprintf_unfiltered (gdb_stdlog, "catch access %p, size:0x%x\n", info->address, info->length);
+            fprintf_unfiltered (gdb_stdlog, "[membrk hit] pc: %p, access: %p-%p, hit: %p-%p\n", pc, access, access + instr_access_size, info->address, info->address + info->length);
             target_call_mprotect(info->page_address, info->page_size, 7);
             ecs->event_thread->suspend.stop_signal = GDB_SIGNAL_TRAP; // nopass to program
             g_need_stop = 1;
@@ -6004,7 +6018,7 @@ handle_signal_stop (struct execution_control_state *ecs)
         stop_waiting (ecs);
       }
       
-      fprintf_unfiltered (gdb_stdlog, "SEGV, total exec count:%d\n", g_exec_count++);
+      fprintf_unfiltered (gdb_stdlog, "SIGSEGV, total exec count:%d\n", g_exec_count++);
       return;
     }
 
@@ -6021,7 +6035,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "ILL, total exec count:%d\n", g_exec_count++);
+    fprintf_unfiltered (gdb_stdlog, "SIGILL, total exec count:%d\n", g_exec_count++);
     return;
   }
   
@@ -6075,7 +6089,9 @@ handle_signal_stop (struct execution_control_state *ecs)
       // exit point
       if(is_exit_bb(voff))
       {
-        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, voff:0x%X\n", voff);
+        if(g_debug)
+          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, voff:0x%X\n", voff);
+
         save_trace_info(NORMAL);
 
         if(g_in_fuzz_mode)
@@ -6088,7 +6104,8 @@ handle_signal_stop (struct execution_control_state *ecs)
           stop_waiting (ecs);
         }
 
-        fprintf_unfiltered (gdb_stdlog, "Exit, total exec count:%d\n", g_exec_count++);
+        if(g_debug)
+          fprintf_unfiltered (gdb_stdlog, "Exit, total exec count:%d\n", g_exec_count++);
         return;
       }
 

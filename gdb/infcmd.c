@@ -58,6 +58,14 @@
 #include <map> 
 #include <vector>
 #include "infcmd.h"
+#include <sys/mman.h>
+#include "nlohmann/json.hpp"
+#include <iostream>
+#include <fstream>
+#include <string>
+
+using json = nlohmann::json;
+#define FUZZ_PAGE_SIZE 0x1000
 
 
 extern std::map<unsigned int, BB_INFO*> g_bb_info_map; 
@@ -832,78 +840,150 @@ void skip_current_call()
 
 }
 
+
+CORE_ADDR get_func_addr_by_module_name(char* module_name, char* func_name)
+{
+  CORE_ADDR addr = 0;
+  const char* sym_name = NULL;
+  const char* file_name = NULL;
+
+  char regex[0x200] = {0};
+  snprintf(regex, sizeof(regex), "^%s$", func_name);
+
+  global_symbol_searcher spec (FUNCTIONS_DOMAIN, regex);
+  std::vector<symbol_search> symbols = spec.search ();
+  for (const symbol_search &p : symbols)
+  {
+    if(p.msymbol.objfile == NULL)
+    {
+      continue;
+    }
+
+    if(strstr(p.msymbol.objfile->original_name, module_name) == NULL)
+    {
+      continue;
+    }
+
+    if (p.msymbol.minsym == NULL)
+    {
+      sym_name = p.symbol->name;
+    }
+    else
+    {
+      sym_name = p.msymbol.minsym->name;
+    }
+
+    if(strcmp(sym_name, func_name) == 0)
+    {
+      file_name = p.msymbol.objfile->original_name;
+      addr = BMSYMBOL_VALUE_ADDRESS (p.msymbol);
+      break;
+    }
+
+  }
+  if(g_debug)
+    fprintf_unfiltered (gdb_stdlog, "%s!%s %p\n", file_name, sym_name, addr);
+  return addr;
+}
+
+
+struct value * get_func_value(char* module_name, char* func_name)
+{
+  struct type *type;
+  struct gdbarch *gdbarch = get_current_arch ();
+  type = lookup_pointer_type (builtin_type (gdbarch)->builtin_char);
+  type = lookup_function_type (type);
+  type = lookup_pointer_type (type);
+
+  CORE_ADDR addr = get_func_addr_by_module_name(module_name, func_name);
+
+  struct value *func = value_from_pointer (type, addr);
+  return func;
+}
+
+
 CORE_ADDR
 target_call_malloc (CORE_ADDR size)
 {
-  struct objfile *objf;
-  struct value *malloc_val = find_function_in_inferior ("malloc", &objf);
   struct value *addr_val;
-  struct gdbarch *gdbarch = get_objfile_arch (objf);
   CORE_ADDR retval;
   struct value *arg[1];
+  struct gdbarch *gdbarch = get_current_arch ();
+
+  struct value *func = get_func_value("libc", "malloc");
 
   arg[0] = value_from_longest (builtin_type (gdbarch)->builtin_unsigned_long, size);
+  addr_val = call_function_by_hand (func, NULL, arg);
 
-  addr_val = call_function_by_hand (malloc_val, NULL, arg);
   retval = value_as_address (addr_val);
   if (retval == (CORE_ADDR) 0)
     fprintf_unfiltered (gdb_stdlog, "target_call_malloc failed\n");
+
+  if(g_debug)
+    fprintf_unfiltered (gdb_stdlog, "target_call_malloc: %p\n", retval);
+
   return retval;
 }
 
 void
 target_call_free (CORE_ADDR addr)
 {
-  struct objfile *objf;
-  struct value *free_val = find_function_in_inferior ("free", &objf);
+  struct gdbarch *gdbarch = get_current_arch ();
   struct value *retval_val;
-  struct gdbarch *gdbarch = get_objfile_arch (objf);
   LONGEST retval;
+
   enum
     {
       ARG_ADDR, ARG_LAST
     };
   struct value *arg[ARG_LAST];
+
+  struct value *func = get_func_value("libc", "free");
+
   arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
-  retval_val = call_function_by_hand (free_val, NULL, arg);
+  retval_val = call_function_by_hand (func, NULL, arg);
+
   retval = value_as_long (retval_val);
   if (retval != 0)
-    warning (_("Failed target_call_free at %s for %s bytes, "));
+    fprintf_unfiltered (gdb_stdlog, "target_call_free(%p), ret:%d\n", addr, retval);
+
+  if(g_debug)
+    fprintf_unfiltered (gdb_stdlog, "free: %d\n", retval);
 }
 
 
 CORE_ADDR
 target_call_mmap (CORE_ADDR size, unsigned prot)
 {
-  struct objfile *objf;
-  struct value *mmap_val = find_function_in_inferior ("mmap64", &objf);
-  struct value *addr_val;
-  struct gdbarch *gdbarch = get_objfile_arch (objf);
+
   CORE_ADDR retval;
+  struct value *addr_val;
+  struct gdbarch *gdbarch = get_current_arch ();
+
+  struct value *func = get_func_value("libc", "mmap64");
+
   enum
     {
       ARG_ADDR, ARG_LENGTH, ARG_PROT, ARG_FLAGS, ARG_FD, ARG_OFFSET, ARG_LAST
     };
   struct value *arg[ARG_LAST];
 
-  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr,
-				      0);
-  /* Assuming sizeof (unsigned long) == sizeof (size_t).  */
-  arg[ARG_LENGTH] = value_from_ulongest
-		    (builtin_type (gdbarch)->builtin_unsigned_long, size);
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, 0);
+  arg[ARG_LENGTH] = value_from_ulongest(builtin_type (gdbarch)->builtin_unsigned_long, size);
+
   gdb_assert ((prot & ~(GDB_MMAP_PROT_READ | GDB_MMAP_PROT_WRITE
 			| GDB_MMAP_PROT_EXEC))
 	      == 0);
+
   arg[ARG_PROT] = value_from_longest (builtin_type (gdbarch)->builtin_int, prot);
   arg[ARG_FLAGS] = value_from_longest (builtin_type (gdbarch)->builtin_int, 0x02|0x20);
   arg[ARG_FD] = value_from_longest (builtin_type (gdbarch)->builtin_int, -1);
-  arg[ARG_OFFSET] = value_from_longest (builtin_type (gdbarch)->builtin_int64,
-					0);
-  addr_val = call_function_by_hand (mmap_val, NULL, arg);
+  arg[ARG_OFFSET] = value_from_longest (builtin_type (gdbarch)->builtin_int64, 0);
+
+  addr_val = call_function_by_hand (func, NULL, arg);
   retval = value_as_address (addr_val);
   if (retval == (CORE_ADDR) -1)
-    error (_("Failed inferior mmap call for %s bytes, errno is changed."),
-	   pulongest (size));
+    error (_("Failed inferior mmap call for %s bytes, errno is changed."), pulongest (size));
   return retval;
 }
 
@@ -911,72 +991,64 @@ target_call_mmap (CORE_ADDR size, unsigned prot)
 void
 target_call_munmap (CORE_ADDR addr, CORE_ADDR size)
 {
-  struct objfile *objf;
-  struct value *munmap_val = find_function_in_inferior ("munmap", &objf);
+
   struct value *retval_val;
-  struct gdbarch *gdbarch = get_objfile_arch (objf);
   LONGEST retval;
+  struct gdbarch *gdbarch = get_current_arch ();
+  struct value *func = get_func_value("libc", "munmap");
+
   enum
     {
       ARG_ADDR, ARG_LENGTH, ARG_LAST
     };
   struct value *arg[ARG_LAST];
 
-  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr,
-				      addr);
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
   /* Assuming sizeof (unsigned long) == sizeof (size_t).  */
-  arg[ARG_LENGTH] = value_from_ulongest
-		    (builtin_type (gdbarch)->builtin_unsigned_long, size);
+  arg[ARG_LENGTH] = value_from_ulongest(builtin_type (gdbarch)->builtin_unsigned_long, size);
 
-
-  retval_val = call_function_by_hand (munmap_val, NULL, arg);
+  retval_val = call_function_by_hand (func, NULL, arg);
   retval = value_as_long (retval_val);
   if (retval != 0)
-    warning (_("Failed inferior munmap call at %s for %s bytes, "
-	       "errno is changed."),
-	     hex_string (addr), pulongest (size));
+    warning (_("Failed inferior munmap call at %s for %s bytes, errno is changed."), hex_string (addr), pulongest (size));
 }
 
 
 void
 target_call_mprotect (CORE_ADDR addr, CORE_ADDR size, unsigned prot)
 {
-  struct objfile *objf;
-  struct value *mprotect_val = find_function_in_inferior ("mprotect", &objf);
+
   struct value *retval_val;
-  struct gdbarch *gdbarch = get_objfile_arch (objf);
   LONGEST retval;
+  struct gdbarch *gdbarch = get_current_arch ();
+  struct value *func = get_func_value("libc", "mprotect");
+
   enum
     {
       ARG_ADDR, ARG_LENGTH, ARG_PROT, ARG_LAST
     };
   struct value *arg[ARG_LAST];
 
-  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr,
-				      addr);
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
   /* Assuming sizeof (unsigned long) == sizeof (size_t).  */
-  arg[ARG_LENGTH] = value_from_ulongest
-		    (builtin_type (gdbarch)->builtin_unsigned_long, size);
-
+  arg[ARG_LENGTH] = value_from_ulongest(builtin_type (gdbarch)->builtin_unsigned_long, size);
   arg[ARG_PROT] = value_from_longest (builtin_type (gdbarch)->builtin_int, prot);
   
-  retval_val = call_function_by_hand (mprotect_val, NULL, arg);
+  retval_val = call_function_by_hand (func, NULL, arg);
   retval = value_as_long (retval_val);
   if (retval != 0)
-    warning (_("Failed inferior mprotect call at %s for %s bytes, "
-	       "errno is changed."),
-	     hex_string (addr), pulongest (size));
+    warning (_("Failed inferior mprotect call at %s for %s bytes, errno is changed."), hex_string (addr), pulongest (size));
 }
 
 CORE_ADDR
 target_call_dlopen (CORE_ADDR addr)
 {
 
-  struct objfile *objf;
-  struct value *_libc_dlopen_mode_val = find_function_in_inferior ("__libc_dlopen_mode", &objf);
   struct value *retval_val;
-  struct gdbarch *gdbarch = get_objfile_arch (objf);
   CORE_ADDR retval;
+  struct gdbarch *gdbarch = get_current_arch ();
+  struct value *func = get_func_value("libc", "__libc_dlopen_mode");
+
   enum
     {
       ARG_ADDR, ARG_MODE, ARG_LAST
@@ -986,7 +1058,7 @@ target_call_dlopen (CORE_ADDR addr)
   arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
   arg[ARG_MODE] = value_from_longest (builtin_type (gdbarch)->builtin_int, 0x80000001);
   
-  retval_val = call_function_by_hand (_libc_dlopen_mode_val, NULL, arg);
+  retval_val = call_function_by_hand (func, NULL, arg);
   retval = value_as_address (retval_val);
   return retval;
 }
@@ -996,11 +1068,11 @@ CORE_ADDR
 target_call_dlclose (CORE_ADDR addr)
 {
 
-  struct objfile *objf;
-  struct value *_libc_dlclose_val = find_function_in_inferior ("__libc_dlclose", &objf);
   struct value *retval_val;
-  struct gdbarch *gdbarch = get_objfile_arch (objf);
   CORE_ADDR retval;
+  struct gdbarch *gdbarch = get_current_arch ();
+  struct value *func = get_func_value("libc", "__libc_dlclose");
+
   enum
     {
       ARG_ADDR, ARG_LAST
@@ -1008,7 +1080,7 @@ target_call_dlclose (CORE_ADDR addr)
   struct value *arg[ARG_LAST];
   arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
   
-  retval_val = call_function_by_hand (_libc_dlclose_val, NULL, arg);
+  retval_val = call_function_by_hand (func, NULL, arg);
   retval = value_as_address (retval_val);
   return retval;
 }
@@ -1049,11 +1121,37 @@ unload_so_cmd (const char *args, int from_tty)
 }
 
 
-#include "nlohmann/json.hpp"
-#include <iostream>
-#include <fstream>
-using json = nlohmann::json;
+CORE_ADDR remote_trap_alloc(unsigned int size, unsigned int align_size)
+{
+    unsigned int rlen;
+    CORE_ADDR ret;
 
+    if (align_size != 1)
+        rlen = (size & ~(align_size - 1)) + align_size;
+    else
+        rlen = size;
+
+    unsigned int pad_size = FUZZ_PAGE_SIZE - (rlen % FUZZ_PAGE_SIZE);
+    unsigned int page_len = rlen + pad_size;
+    unsigned int alloc_size = page_len + FUZZ_PAGE_SIZE;
+
+    CORE_ADDR mmap_addr = target_call_mmap(alloc_size, PROT_READ | PROT_WRITE);
+    unsigned int rnd = rand() % 2;
+
+    if (rnd)
+    {
+        target_call_mprotect(mmap_addr + page_len, FUZZ_PAGE_SIZE, PROT_NONE);
+        ret = mmap_addr + pad_size;
+    }
+    else
+    {
+        target_call_mprotect(mmap_addr, FUZZ_PAGE_SIZE, PROT_NONE);
+        ret = mmap_addr + FUZZ_PAGE_SIZE;
+    }
+
+    fprintf_unfiltered (gdb_stdlog, "[remote_trap_alloc] page:%p, addr:%p\n", mmap_addr, ret);
+    return ret;
+}
 
 void parse_json_file(char *fpath)
 {
@@ -1090,6 +1188,8 @@ void parse_json_file(char *fpath)
 }
 
 
+
+
 void 
 fuzz_dbg_cmd (const char *args, int from_tty)
 {
@@ -1098,7 +1198,13 @@ fuzz_dbg_cmd (const char *args, int from_tty)
   CORE_ADDR mmap_addr = target_call_mmap(0x1000 * 3, 7);
   fprintf_unfiltered (gdb_stdlog, "target_call_malloc return:%p\n", addr);
   fprintf_unfiltered (gdb_stdlog, "target_call_mmap return:%p\n", mmap_addr);
+
   target_call_mprotect(mmap_addr + 0x1000, 0x1000, 0);
+
+  target_call_munmap(mmap_addr, 0x1000 * 3);
+  fprintf_unfiltered (gdb_stdlog, "target_call_munmap %p\n", mmap_addr);
+
+
   CORE_ADDR lib_addr = target_load_library("/lib/x86_64-linux-gnu/libz.so.1.2.8");
   fprintf_unfiltered (gdb_stdlog, "lib_addr:%p\n", lib_addr);
 
@@ -1108,12 +1214,14 @@ fuzz_dbg_cmd (const char *args, int from_tty)
   fprintf_unfiltered (gdb_stdlog, "rax:%p\n", rax_value);
   regcache_raw_write_unsigned(regcache, 0, 0xdeadbeef);
 
-  parse_json_file("/home/hac425/gdb-9.2/build/test.json");
+  // parse_json_file("/home/hac425/gdb-9.2/build/test.json");
+
+  remote_trap_alloc(24, 1);
+
+  get_func_addr_by_module_name("libc", "malloc");
+  get_func_addr_by_module_name("libc", "mmap64");
 }
 
-#include <sys/mman.h>
-
-#define FUZZ_PAGE_SIZE 0x1000
 
 void 
 membrk_cmd (const char *args, int from_tty)
@@ -1197,6 +1305,8 @@ list_mem_brk_cmd (const char *args, int from_tty)
     fprintf_unfiltered (gdb_stdlog, "mem_brk id:%d, range: %p--%p, current prot: %d\n", i, info->address, info->address + info->length, info->prot);
   }
 }
+
+
 
 /* Start the execution of the program up until the beginning of the main
    program.  */
