@@ -98,6 +98,8 @@ enum TRACE_STATUS
   STATUS
 };
 
+enum TRACE_STATUS g_exec_status;
+std::string g_crash_info_string;
 
 static void sig_print_info (enum gdb_signal);
 
@@ -130,6 +132,60 @@ static struct async_event_handler *infrun_async_inferior_event_token;
 /* Stores whether infrun_async was previously enabled or disabled.
    Starts off as -1, indicating "never enabled/disabled".  */
 static int infrun_is_async = -1;
+
+
+std::string get_context_string()
+{
+    std::string cmd_res = execute_command_to_string("i r", 0,  false);
+    cmd_res += execute_command_to_string("x/4i $pc", 0,  false);
+    cmd_res += execute_command_to_string("bt 4", 0,  false);
+    return cmd_res;
+}
+
+static void save_trace_info(enum TRACE_STATUS status)
+{
+
+  if(!g_in_fuzz_mode)
+    return;
+
+  FILE* fp = fopen("gdb.trace", "w");
+
+  if(status == CRASH)
+  {
+    fprintf (fp, "crash\n");
+  }
+  else
+  {
+    fprintf (fp, "normal\n");
+  }
+
+  unsigned trace_count = g_bb_trace.size();
+  if(trace_count > 0)
+  {
+    int i = 0;
+    for(i = 0; i < trace_count - 1; i++)
+    {
+      fprintf (fp, "0x%X,", g_bb_trace[i]);
+    }
+    // g_bb_trace.clear();
+    fprintf (fp, "0x%X", g_bb_trace[i]);
+  }
+
+  fprintf (fp, "\n");
+  fclose(fp);
+
+
+  if(status == CRASH)
+  {
+    fp = fopen("gdb.crash", "w");
+    fprintf (fp, "%s\n", g_crash_info_string.c_str());
+    fclose(fp);
+  }
+
+  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] save_trace_info done\n");
+}
+
+
 
 /* See infrun.h.  */
 
@@ -1585,6 +1641,12 @@ unsigned long fuzz_get_file_size(const char *path)
 static void
 infrun_inferior_exit (struct inferior *inf)
 {
+
+  if(g_in_fuzz_mode)
+  {
+    save_trace_info(g_exec_status);
+  }
+
   if(g_patch_to_binary && g_full_path_of_coverage_module[0] != '\x00')
   {
     char* fpath = g_full_path_of_coverage_module;
@@ -5077,10 +5139,19 @@ Cannot fill $_exitsignal with the correct signal number.\n"));
 	  gdb::observers::signal_exited.notify (ecs->ws.value.sig);
 	}
 
+      if(g_in_fuzz_mode)
+      {
+        g_exec_status = NORMAL;
+        run_command ("", 0);
+        prepare_to_wait (ecs);
+      }
+      else
+      {
+        target_mourn_inferior (inferior_ptid);
+        stop_print_frame = 0;
+        stop_waiting (ecs);
+      }
       gdb_flush (gdb_stdout);
-      target_mourn_inferior (inferior_ptid);
-      stop_print_frame = 0;
-      stop_waiting (ecs);
       return;
 
       /* The following are the only cases in which we keep going;
@@ -5585,57 +5656,6 @@ finish_step_over (struct execution_control_state *ecs)
 }
 
 
-static void save_trace_info(enum TRACE_STATUS status)
-{
-
-  if(!g_in_fuzz_mode)
-    return;
-
-  FILE* fp = fopen("gdb.trace", "w");
-
-  if(status == CRASH)
-  {
-    fprintf (fp, "crash\n");
-  }
-  else
-  {
-    fprintf (fp, "normal\n");
-  }
-
-  unsigned trace_count = g_bb_trace.size();
-  if(trace_count > 0)
-  {
-    int i = 0;
-    for(i = 0; i < trace_count - 1; i++)
-    {
-      fprintf (fp, "0x%X,", g_bb_trace[i]);
-    }
-    // g_bb_trace.clear();
-    fprintf (fp, "0x%X", g_bb_trace[i]);
-  }
-
-  fprintf (fp, "\n");
-  fclose(fp);
-
-
-  if(status == CRASH)
-  {
-    fp = fopen("gdb.crash", "w");
-    // 不需要彩色输出
-    std::string cmd_res = execute_command_to_string("i r", 0,  false);
-    fprintf (fp, "%s\n", cmd_res.c_str());
-
-    cmd_res = execute_command_to_string("x/4i $pc", 0,  false);
-    fprintf (fp, "%s\n", cmd_res.c_str());
-
-    cmd_res = execute_command_to_string("bt 4", 0,  false);
-    fprintf (fp, "%s\n", cmd_res.c_str());
-
-    fclose(fp);
-  }
-
-  fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] save_trace_info done\n");
-}
 
 
 
@@ -5926,9 +5946,10 @@ handle_signal_stop (struct execution_control_state *ecs)
   // trapfuzzer patch
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_INT)
   {
-    save_trace_info(NORMAL);
+    // save_trace_info(NORMAL);
     if(g_in_fuzz_mode)
     {
+      g_exec_status = NORMAL;
       run_command ("", 0);
       prepare_to_wait (ecs);
     }
@@ -5942,9 +5963,11 @@ handle_signal_stop (struct execution_control_state *ecs)
 
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ABRT)
   {
-    save_trace_info(CRASH);
+    // save_trace_info(CRASH);
     if(g_in_fuzz_mode)
     {
+      g_exec_status = CRASH;
+      g_crash_info_string = get_context_string();
       run_command ("", 0);
       prepare_to_wait (ecs);
     }
@@ -6007,9 +6030,11 @@ handle_signal_stop (struct execution_control_state *ecs)
         ;
       }
 
-      save_trace_info(CRASH);
+      // save_trace_info(CRASH);
       if(g_in_fuzz_mode)
       {
+        g_exec_status = CRASH;
+        g_crash_info_string = get_context_string();
         run_command ("", 0);
         prepare_to_wait (ecs);
       }
@@ -6025,9 +6050,11 @@ handle_signal_stop (struct execution_control_state *ecs)
 
   if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ILL)
   {
-    save_trace_info(CRASH);
+    // save_trace_info(CRASH);
     if(g_in_fuzz_mode)
     {
+      g_exec_status = CRASH;
+      g_crash_info_string = get_context_string();
       run_command ("", 0);
       prepare_to_wait (ecs);
     }
@@ -6092,10 +6119,11 @@ handle_signal_stop (struct execution_control_state *ecs)
         if(g_debug)
           fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, voff:0x%X\n", voff);
 
-        save_trace_info(NORMAL);
+        // save_trace_info(NORMAL);
 
         if(g_in_fuzz_mode)
         {
+          g_exec_status = NORMAL;
           run_command ("", 0);
           prepare_to_wait (ecs);
         }
