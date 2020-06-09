@@ -5144,6 +5144,8 @@ Cannot fill $_exitsignal with the correct signal number.\n"));
         g_exec_status = NORMAL;
         run_command ("", 0);
         prepare_to_wait (ecs);
+        if(g_debug)
+          fprintf_filtered (gdb_stdlog, "TARGET_WAITKIND_SIGNALLED\n");
       }
       else
       {

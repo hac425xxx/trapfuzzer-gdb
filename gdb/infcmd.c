@@ -742,8 +742,8 @@ load_trapfuzzer_info (const char *args, int from_tty)
     memcpy(info, &tmp, sizeof(BB_INFO));
     g_bb_info_map[info->voff] = info;
 
-    if(g_debug)
-      fprintf_unfiltered (gdb_stdlog, "voff:0x%X\n", info->voff);
+    // if(g_debug)
+    //   fprintf_unfiltered (gdb_stdlog, "voff:0x%X\n", info->voff);
   }
   fclose(fp);
 
