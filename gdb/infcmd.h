@@ -30,4 +30,26 @@ typedef struct _MEM_BRK_INFO{
   unsigned int page_size;
 }MEM_BRK_INFO;
 
+enum HOOK_FUNC_TYPE {
+  MALLOC_FUNC,
+  FREE_FUNC,
+  REALLOC_FUNC
+};
+
+
+typedef struct _HOOK_BRK{
+  CORE_ADDR address;
+  unsigned int length;
+  enum HOOK_FUNC_TYPE func_type;
+}HOOK_BRK;
+
+typedef struct _HEAP_INFO{
+  CORE_ADDR address;
+  unsigned int length;
+  CORE_ADDR page_address;
+  unsigned int page_size;
+}HEAP_INFO;
+
+
+CORE_ADDR get_argument(unsigned int idx);
 #endif

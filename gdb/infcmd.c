@@ -83,12 +83,15 @@ extern std::vector<MEM_BRK_INFO*> mem_brk_info_list;
 
 std::vector<CORE_ADDR> dl_handle_list;
 
+std::map<CORE_ADDR, HOOK_BRK*> g_hook_brk_map; 
+
 /* Local functions: */
 
 extern "C" {
   #include "infcmd.h"
 }
 
+std::map<CORE_ADDR, HEAP_INFO*> g_heap_asan_map;
 
 extern struct value *call_function_by_hand (struct value *function,
 					    type *default_return_type,
@@ -1013,6 +1016,48 @@ target_call_munmap (CORE_ADDR addr, CORE_ADDR size)
     warning (_("Failed inferior munmap call at %s for %s bytes, errno is changed."), hex_string (addr), pulongest (size));
 }
 
+void
+target_call_memset (CORE_ADDR addr, CORE_ADDR c,CORE_ADDR size)
+{
+
+  struct value *retval_val;
+  struct gdbarch *gdbarch = get_current_arch ();
+  struct value *func = get_func_value("libc", "memset");
+
+  enum
+    {
+      ARG_ADDR, ARG_C, ARG_LENGTH, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+
+  arg[ARG_ADDR] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, addr);
+  arg[ARG_C] = value_from_ulongest(builtin_type (gdbarch)->builtin_unsigned_int, c);
+  /* Assuming sizeof (unsigned long) == sizeof (size_t).  */
+  arg[ARG_LENGTH] = value_from_ulongest(builtin_type (gdbarch)->builtin_unsigned_long, size);
+
+  call_function_by_hand (func, NULL, arg);
+}
+
+void
+target_call_memcpy (CORE_ADDR dst, CORE_ADDR src, CORE_ADDR size)
+{
+
+  struct value *retval_val;
+  struct gdbarch *gdbarch = get_current_arch ();
+  struct value *func = get_func_value("libc", "memcpy");
+
+  enum
+    {
+      ARG_DST, ARG_SRC, ARG_LENGTH, ARG_LAST
+    };
+  struct value *arg[ARG_LAST];
+
+  arg[ARG_DST] = value_from_pointer (builtin_type (gdbarch)->builtin_data_ptr, dst);
+  arg[ARG_SRC] = value_from_ulongest(builtin_type (gdbarch)->builtin_data_ptr, src);
+  arg[ARG_LENGTH] = value_from_ulongest(builtin_type (gdbarch)->builtin_unsigned_long, size);
+
+  call_function_by_hand (func, NULL, arg);
+}
 
 void
 target_call_mprotect (CORE_ADDR addr, CORE_ADDR size, unsigned prot)
@@ -1149,9 +1194,36 @@ CORE_ADDR remote_trap_alloc(unsigned int size, unsigned int align_size)
         ret = mmap_addr + FUZZ_PAGE_SIZE;
     }
 
-    fprintf_unfiltered (gdb_stdlog, "[remote_trap_alloc] page:%p, addr:%p\n", mmap_addr, ret);
+    HEAP_INFO* info = (HEAP_INFO*) malloc(sizeof(HEAP_INFO));
+    info->address = ret;
+    info->length = rlen;
+    info->page_address = mmap_addr;
+    info->page_size = alloc_size;
+    g_heap_asan_map[ret] = info;
+
+    // fprintf_unfiltered (gdb_stdlog, "[remote_trap_alloc] page:%p, addr:%p\n", mmap_addr, ret);
     return ret;
 }
+
+int remote_trap_free(CORE_ADDR addr)
+{
+    HEAP_INFO* info = g_heap_asan_map[addr];
+    if(info != NULL)
+    {
+      target_call_munmap(info->page_address, info->page_size);
+      free(info);
+      g_heap_asan_map[addr] = NULL;
+    }
+
+    // fprintf_unfiltered (gdb_stdlog, "[remote_trap_alloc] page:%p, addr:%p\n", mmap_addr, ret);
+    return 0;
+}
+
+CORE_ADDR remote_trap_malloc(unsigned int size)
+{
+  return remote_trap_alloc(size, 1);
+}
+
 
 void parse_json_file(char *fpath)
 {
@@ -1188,38 +1260,91 @@ void parse_json_file(char *fpath)
 }
 
 
+gdb_byte i386_fuzz_break_insn[] = { 0xcc }; /* int 3 */
 
+
+void insert_memory_bp_instr(CORE_ADDR addr)
+{
+  target_write_memory(addr, i386_fuzz_break_insn, sizeof(i386_fuzz_break_insn));
+}
+
+
+
+void add_hook_func(CORE_ADDR addr, enum HOOK_FUNC_TYPE type)
+{
+  fprintf_unfiltered (gdb_stdlog, "hook:%p\n", addr);
+  insert_memory_bp_instr(addr);
+  HOOK_BRK* b = (HOOK_BRK*)malloc(sizeof(HOOK_BRK));
+  b->address = addr;
+  b->length = 1;
+  b->func_type = type;
+  g_hook_brk_map[b->address] = b;
+}
+
+
+void hook_heap_function()
+{
+  CORE_ADDR addr = get_func_addr_by_module_name("libc", "malloc");
+  add_hook_func(addr, MALLOC_FUNC);
+
+  addr = get_func_addr_by_module_name("libc", "free");
+  add_hook_func(addr, FREE_FUNC);
+
+
+
+  addr = get_func_addr_by_module_name("libc", "realloc");
+  add_hook_func(addr, REALLOC_FUNC);
+}
 
 void 
 fuzz_dbg_cmd (const char *args, int from_tty)
 {
-  skip_current_call();
-  CORE_ADDR addr = target_call_malloc(0x20);
-  CORE_ADDR mmap_addr = target_call_mmap(0x1000 * 3, 7);
-  fprintf_unfiltered (gdb_stdlog, "target_call_malloc return:%p\n", addr);
-  fprintf_unfiltered (gdb_stdlog, "target_call_mmap return:%p\n", mmap_addr);
 
-  target_call_mprotect(mmap_addr + 0x1000, 0x1000, 0);
+  hook_heap_function();
 
-  target_call_munmap(mmap_addr, 0x1000 * 3);
-  fprintf_unfiltered (gdb_stdlog, "target_call_munmap %p\n", mmap_addr);
+  // skip_current_call();
+  // CORE_ADDR addr = target_call_malloc(0x20);
+  // CORE_ADDR mmap_addr = target_call_mmap(0x1000 * 3, 7);
+  // fprintf_unfiltered (gdb_stdlog, "target_call_malloc return:%p\n", addr);
+  // fprintf_unfiltered (gdb_stdlog, "target_call_mmap return:%p\n", mmap_addr);
+
+  // target_call_mprotect(mmap_addr + 0x1000, 0x1000, 0);
+
+  // target_call_munmap(mmap_addr, 0x1000 * 3);
+  // fprintf_unfiltered (gdb_stdlog, "target_call_munmap %p\n", mmap_addr);
 
 
-  CORE_ADDR lib_addr = target_load_library("/lib/x86_64-linux-gnu/libz.so.1.2.8");
-  fprintf_unfiltered (gdb_stdlog, "lib_addr:%p\n", lib_addr);
+  // CORE_ADDR lib_addr = target_load_library("/lib/x86_64-linux-gnu/libz.so.1.2.8");
+  // fprintf_unfiltered (gdb_stdlog, "lib_addr:%p\n", lib_addr);
 
-  ULONGEST rax_value = 0;
-  struct regcache *regcache = get_current_regcache ();
-  regcache_raw_read_unsigned(regcache, 0, &rax_value);
-  fprintf_unfiltered (gdb_stdlog, "rax:%p\n", rax_value);
-  regcache_raw_write_unsigned(regcache, 0, 0xdeadbeef);
+  // ULONGEST rax_value = 0;
+  // struct regcache *regcache = get_current_regcache ();
+  // regcache_raw_read_unsigned(regcache, 0, &rax_value);
+  // fprintf_unfiltered (gdb_stdlog, "rax:%p\n", rax_value);
+  // regcache_raw_write_unsigned(regcache, 0, 0xdeadbeef);
 
-  // parse_json_file("/home/hac425/gdb-9.2/build/test.json");
 
-  remote_trap_alloc(24, 1);
+  // CORE_ADDR tbl[20] = {0};
 
-  get_func_addr_by_module_name("libc", "malloc");
-  get_func_addr_by_module_name("libc", "mmap64");
+  // for(int i=0; i<20; i++)
+  // {
+  //   tbl[i] = target_call_malloc(0x80);
+  //   target_call_memset(tbl[i], 0xf2f2f2f2f2f2f2f2, 0x80);
+  // }
+
+  // for(int i=0; i<20; i++)
+  // {
+  //   target_call_free(tbl[i]);
+  // }
+
+  // // parse_json_file("/home/hac425/gdb-9.2/build/test.json");
+
+  // remote_trap_alloc(24, 1);
+
+  // get_func_addr_by_module_name("libc", "malloc");
+  // get_func_addr_by_module_name("libc", "mmap64");
+
+
 }
 
 

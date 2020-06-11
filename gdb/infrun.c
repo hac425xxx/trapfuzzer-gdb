@@ -90,6 +90,9 @@ std::vector<unsigned int> g_bb_trace;
 std::vector<unsigned int> exit_bb_list;
 std::vector<MEM_BRK_INFO*> mem_brk_info_list;
 extern std::vector<CORE_ADDR> dl_handle_list;;
+extern std::map<CORE_ADDR, HOOK_BRK*> g_hook_brk_map;
+extern std::map<CORE_ADDR, HEAP_INFO*> g_heap_asan_map;
+
 
 enum TRACE_STATUS
 {
@@ -100,6 +103,38 @@ enum TRACE_STATUS
 
 enum TRACE_STATUS g_exec_status;
 std::string g_crash_info_string;
+
+
+CORE_ADDR get_register_value(char* s)
+{
+  CORE_ADDR ret = 0;
+  ret = parse_and_eval_long (s);
+  return ret;
+}
+
+void set_register_value(char* s, CORE_ADDR v)
+{
+  char fuzz_cmd[0x100] = {0};
+  sprintf(fuzz_cmd, "set %s=%p", s, (void*)v);
+  execute_command(fuzz_cmd, 0);
+}
+
+CORE_ADDR get_argument(unsigned int idx)
+{
+  CORE_ADDR ret = 0;
+
+  switch(idx)
+  {
+    case 0:
+      ret = parse_and_eval_long ("$rdi");
+      break;
+    case 1:
+      ret = parse_and_eval_long ("$rsi");
+      break;
+  }
+  
+  return ret;
+}
 
 static void sig_print_info (enum gdb_signal);
 
@@ -5819,11 +5854,106 @@ MEM_BRK_INFO * get_mem_brk_info_by_addr(CORE_ADDR addr, unsigned int instr_acces
     return ret;
 }
 
+
 void
 target_call_mprotect (CORE_ADDR addr, CORE_ADDR size, unsigned prot);
+CORE_ADDR remote_trap_malloc(unsigned int size);
+int remote_trap_free(CORE_ADDR addr);
 
 unsigned int g_need_stop = 0;
 MEM_BRK_INFO* g_pre_mem_brk_info = NULL;
+
+
+
+
+void malloc_callback()
+{
+  CORE_ADDR arg = get_argument(0);
+  struct frame_info *cf = get_selected_frame (NULL);
+  struct frame_info *pf = get_prev_frame (cf);
+  
+  CORE_ADDR caller =  frame_unwind_caller_pc(cf);
+  CORE_ADDR caller_sp = get_frame_sp(pf);
+  // fprintf_unfiltered (gdb_stdlog, "caller sp:%p, caller pc:%p\n", caller_sp, caller);
+
+  char fuzz_cmd[0x100] = {0};
+  sprintf(fuzz_cmd, "set $sp=%p", (void*)caller_sp);
+  execute_command(fuzz_cmd, 0);
+
+  sprintf(fuzz_cmd, "set $pc=%p", (void*)caller);
+  execute_command(fuzz_cmd, 0);
+
+  CORE_ADDR p = remote_trap_malloc((unsigned int)arg);
+
+  sprintf(fuzz_cmd, "set $rax=%p", p);
+  execute_command(fuzz_cmd, 0);
+
+}
+
+void free_callback()
+{
+  CORE_ADDR arg = get_argument(0);
+  // fprintf_unfiltered (gdb_stdlog, "arg:%p\n", arg);
+  struct frame_info *cf = get_selected_frame (NULL);
+  struct frame_info *pf = get_prev_frame (cf);
+  
+  CORE_ADDR caller =  frame_unwind_caller_pc(cf);
+  CORE_ADDR caller_sp = get_frame_sp(pf);
+  // fprintf_unfiltered (gdb_stdlog, "[free_callback] caller sp:%p, caller pc:%p\n", caller_sp, caller);
+
+  remote_trap_free(arg);
+
+  char fuzz_cmd[0x100] = {0};
+  sprintf(fuzz_cmd, "set $sp=%p", (void*)caller_sp);
+  execute_command(fuzz_cmd, 0);
+
+  sprintf(fuzz_cmd, "set $pc=%p", (void*)caller);
+  execute_command(fuzz_cmd, 0);
+
+  // fprintf_unfiltered (gdb_stdlog, "remote_trap_free:%p\n", arg);
+
+  sprintf(fuzz_cmd, "set $rax=0");
+  execute_command(fuzz_cmd, 0);
+
+}
+
+void
+target_call_memcpy (CORE_ADDR dst, CORE_ADDR src, CORE_ADDR size);
+
+void realloc_callback()
+{
+  CORE_ADDR addr = get_argument(0);
+  CORE_ADDR new_sz = get_argument(1);
+
+  CORE_ADDR current_sp = get_register_value("$sp");
+  CORE_ADDR ret_addr = 0;
+
+  ret_addr = remote_trap_malloc(new_sz);
+  if(addr != 0)
+  {
+    if(g_heap_asan_map[addr])
+    {
+      HEAP_INFO* info = g_heap_asan_map[addr];
+      target_call_memcpy(ret_addr, info->address, info->length);
+    }
+    else
+    {
+      target_call_memcpy(ret_addr, addr, new_sz);
+    }
+  }
+  
+  CORE_ADDR caller = 0;
+
+  target_read_memory(current_sp, (gdb_byte*)&caller, 8);
+  CORE_ADDR caller_sp = current_sp - 8;
+
+  // fprintf_unfiltered (gdb_stdlog, "[realloc_callback] caller sp:%p, caller pc:%p\n", caller_sp, caller);
+  set_register_value("$sp", caller_sp);
+  set_register_value("$pc", caller);
+  set_register_value("$rax", ret_addr);
+}
+
+
 
 /* Come here when the program has stopped with a signal.  */
 
@@ -6080,6 +6210,29 @@ handle_signal_stop (struct execution_control_state *ecs)
       const address_space *aspace = regcache->aspace ();
 
       pc = regcache_read_pc (regcache);
+
+      // handle brk
+      if(g_hook_brk_map[pc] != NULL)
+      {
+        HOOK_BRK* hook_brk = g_hook_brk_map[pc];
+
+        switch(hook_brk->func_type)
+        {
+          case MALLOC_FUNC:
+            malloc_callback();
+            break;
+          case FREE_FUNC:
+            free_callback();
+            break;
+          case REALLOC_FUNC:
+            realloc_callback();
+            break;
+        }
+        
+        // stop_waiting (ecs);
+        keep_going (ecs);
+        return;
+      }
 
 
       if(g_pre_mem_brk_info != NULL)
