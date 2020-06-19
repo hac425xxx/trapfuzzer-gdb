@@ -1788,6 +1788,12 @@ infrun_inferior_created (struct target_ops *ops, int from_tty)
   fprintf(fp, "%d\n", getpid());
   fclose(fp);
 
+  fp = fopen("target.pid", "w");
+  fprintf(fp, "%d\n", current_inferior ()->pid);
+  fclose(fp);
+  
+
+
   if(!g_fixed_cov_base_addr)
     g_full_path_of_coverage_module[0] = '\x00';
 
@@ -6089,7 +6095,8 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "SIGINT, total exec count:%d\n", g_exec_count++);
+    if(g_debug)
+      fprintf_unfiltered (gdb_stdlog, "SIGINT, total exec count:%d\n", g_exec_count++);
     return;
   }
 
@@ -6174,8 +6181,8 @@ handle_signal_stop (struct execution_control_state *ecs)
       {
         stop_waiting (ecs);
       }
-      
-      fprintf_unfiltered (gdb_stdlog, "SIGSEGV, total exec count:%d\n", g_exec_count++);
+      if(g_debug)
+        fprintf_unfiltered (gdb_stdlog, "SIGSEGV, total exec count:%d\n", g_exec_count++);
       return;
     }
 
@@ -6194,7 +6201,8 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
-    fprintf_unfiltered (gdb_stdlog, "SIGILL, total exec count:%d\n", g_exec_count++);
+    if(g_debug)
+      fprintf_unfiltered (gdb_stdlog, "SIGILL, total exec count:%d\n", g_exec_count++);
     return;
   }
   
