@@ -80,10 +80,13 @@ extern CORE_ADDR g_coverage_module_base;
 extern CORE_ADDR g_coverage_module_end;
 extern unsigned int g_fixed_cov_base_addr;
 extern std::vector<MEM_BRK_INFO*> mem_brk_info_list;
+extern std::vector<COV_MOD_INFO*> cov_mod_info_list;
 
 std::vector<CORE_ADDR> dl_handle_list;
 
 std::map<CORE_ADDR, HOOK_BRK*> g_hook_brk_map; 
+
+unsigned int g_cov_mod_count = 0;
 
 /* Local functions: */
 
@@ -731,11 +734,16 @@ load_trapfuzzer_info (const char *args, int from_tty)
     fprintf_unfiltered (gdb_stdlog, "load-trapfuzzer-info %s\n", args);
   }
 
+
+  COV_MOD_INFO* cmi = new COV_MOD_INFO;
+
   FILE *fp = fopen(args, "rb");
+  
+  fread(&cmi->rva_size, 4, 1, fp);
+
   int fname_sz = 0;
   fread(&fname_sz, 4, 1, fp);
-  g_coverage_module_name = (char*)malloc(fname_sz);
-  fread(g_coverage_module_name, fname_sz, 1, fp);
+  fread(cmi->module_name, fname_sz, 1, fp);
   
   BB_INFO tmp = {0};
   while(fread(&tmp, 4 * 3, 1, fp) == 1)
@@ -743,12 +751,19 @@ load_trapfuzzer_info (const char *args, int from_tty)
     fread(&tmp.instr, tmp.instr_size, 1, fp);
     BB_INFO* info = (BB_INFO*)malloc(sizeof(BB_INFO));
     memcpy(info, &tmp, sizeof(BB_INFO));
-    g_bb_info_map[info->voff] = info;
-
-    // if(g_debug)
-    //   fprintf_unfiltered (gdb_stdlog, "voff:0x%X\n", info->voff);
+    cmi->bb_info_map[info->voff] = info;
+    if(g_debug)
+      fprintf_unfiltered (gdb_stdlog, "voff:0x%X\n", info->voff);
   }
   fclose(fp);
+
+  
+  cmi->image_base = 0;
+  cmi->image_end = 0;
+  cmi->full_path[0] = '\x00';
+  cmi->mod_id = g_cov_mod_count++;
+
+  cov_mod_info_list.push_back(cmi);
 
   fprintf_unfiltered (gdb_stdlog, "load-trapfuzzer-info done\n");
 }

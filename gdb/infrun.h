@@ -310,5 +310,19 @@ typedef struct _BB_INFO{
    unsigned char instr[4];
 }BB_INFO;
 
+#include <map> 
+#include <vector>
+typedef struct _COV_MOD_INFO{
+   std::map<unsigned int, BB_INFO*> bb_info_map; 
+   char module_name[1024];
+   char full_path[PATH_MAX];
+   CORE_ADDR image_base;
+   CORE_ADDR image_end;
+   CORE_ADDR rva_size;
+   unsigned int mod_id;
+   std::vector<unsigned int> bb_trace;
+}COV_MOD_INFO;
+
+
 
 #endif /* INFRUN_H */

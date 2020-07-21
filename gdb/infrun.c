@@ -89,6 +89,8 @@ int g_clt_sock = -1;
 std::vector<unsigned int> g_bb_trace;
 std::vector<unsigned int> exit_bb_list;
 std::vector<MEM_BRK_INFO*> mem_brk_info_list;
+std::vector<COV_MOD_INFO*> cov_mod_info_list;
+
 extern std::vector<CORE_ADDR> dl_handle_list;;
 extern std::map<CORE_ADDR, HOOK_BRK*> g_hook_brk_map;
 extern std::map<CORE_ADDR, HEAP_INFO*> g_heap_asan_map;
@@ -177,13 +179,16 @@ std::string get_context_string()
     return cmd_res;
 }
 
+char trace_file_path[PATH_MAX];
+
 static void save_trace_info(enum TRACE_STATUS status)
 {
+
 
   if(!g_in_fuzz_mode)
     return;
 
-  FILE* fp = fopen("gdb.trace", "w");
+  FILE* fp = fopen("gdb.status", "w");
 
   if(status == CRASH)
   {
@@ -194,20 +199,26 @@ static void save_trace_info(enum TRACE_STATUS status)
     fprintf (fp, "normal\n");
   }
 
-  unsigned trace_count = g_bb_trace.size();
-  if(trace_count > 0)
+  fclose(fp);
+
+  for(int i = 0; i <  cov_mod_info_list.size(); i++)
   {
-    int i = 0;
-    for(i = 0; i < trace_count - 1; i++)
+    COV_MOD_INFO* cmi = cov_mod_info_list[i];
+    sprintf(trace_file_path, "%s.trace", cmi->module_name);
+    fp = fopen(trace_file_path, "w");
+    unsigned trace_count = cmi->bb_trace.size();
+    if(trace_count > 0)
     {
-      fprintf (fp, "0x%X,", g_bb_trace[i]);
+      int j = 0;
+      for(j = 0; j < trace_count - 1; j++)
+      {
+        fprintf (fp, "0x%X,", cmi->bb_trace[j]);
+      }
+      fprintf (fp, "0x%X", cmi->bb_trace[j]);
     }
-    // g_bb_trace.clear();
-    fprintf (fp, "0x%X", g_bb_trace[i]);
+    fclose(fp);
   }
 
-  fprintf (fp, "\n");
-  fclose(fp);
 
 
   if(status == CRASH)
@@ -1668,25 +1679,13 @@ unsigned long fuzz_get_file_size(const char *path)
 		filesize = statbuff.st_size;
 	}
 	return filesize;
-}
+} 
 
 
-
-
-static void
-infrun_inferior_exit (struct inferior *inf)
-{
-
-  if(g_in_fuzz_mode)
-  {
-    save_trace_info(g_exec_status);
-  }
-
-  if(g_patch_to_binary && g_full_path_of_coverage_module[0] != '\x00')
-  {
-    char* fpath = g_full_path_of_coverage_module;
+void patch_to_file(COV_MOD_INFO* cmi)
+{ 
+    char* fpath = cmi->full_path;
     int fd = open(fpath, O_RDWR | O_CREAT, 0666);
-  
     unsigned int size = fuzz_get_file_size(fpath);
     size = FUZZ_PAGE_SIZE - (size % FUZZ_PAGE_SIZE) + size;
 
@@ -1698,21 +1697,39 @@ infrun_inferior_exit (struct inferior *inf)
     if(file_content != (unsigned char*)-1)
     {
       int i = 0;
-      for(i = 0; i < g_bb_trace.size(); i++)
+      for(i = 0; i < cmi->bb_trace.size(); i++)
       {
-        unsigned int off = g_bb_trace[i];
-        BB_INFO* info = g_bb_info_map[off];
+        unsigned int off = cmi->bb_trace[i];
+        BB_INFO* info = cmi->bb_info_map[off];
         memcpy(file_content + info->foff, info->instr, info->instr_size);
       }
 
       munmap(file_content, size);
       close(fd);
       if(g_debug)
-        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch %d bytes\n", g_bb_trace.size());
+        fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch %d bytes to %s\n", cmi->bb_trace.size(), fpath);
+    }
+}
+
+
+static void
+infrun_inferior_exit (struct inferior *inf)
+{
+
+  if(g_in_fuzz_mode)
+  {
+    save_trace_info(g_exec_status);
+  }
+
+  if(g_patch_to_binary)
+  {
+    for(int i = 0; i <  cov_mod_info_list.size(); i++)
+    {
+      COV_MOD_INFO* cmi = cov_mod_info_list[i];
+      patch_to_file(cmi);
     }
   }
 
-  g_bb_trace.clear();
 
   for(int i=0; i < mem_brk_info_list.size(); i++)
   {
@@ -1727,6 +1744,17 @@ infrun_inferior_exit (struct inferior *inf)
   {
     unsigned int data = 0xdd12; // test finished
     write(g_clt_sock, &data, sizeof(unsigned int));
+  }
+
+
+
+  for(int i = 0; i <  cov_mod_info_list.size(); i++)
+  {
+    COV_MOD_INFO* cmi = cov_mod_info_list[i];
+    cmi->image_base = 0;
+    cmi->image_end = 0;
+    cmi->full_path[0] = '\x00';
+    cmi->bb_trace.clear();
   }
 
 
@@ -5828,15 +5856,27 @@ int parse_maps(int pid)
         fgets(buf, PATH_MAX, file);
         maps_split_line(buf, addr1, addr2, perm, offset, dev, inode, g_full_path_of_coverage_module);
         // printf("%s-%s %s %s %s %s\t%s\n",addr1,addr2,perm,offset,dev,inode,pathname);
-        if(strstr(g_full_path_of_coverage_module, g_coverage_module_name) != NULL)
+        for(int i = 0; i <  cov_mod_info_list.size(); i++)
         {
-          unsigned long addr_start=0;
-          sscanf(addr1, "%lx", (long unsigned *)&addr_start);
-          g_coverage_module_base = addr_start;
+          COV_MOD_INFO* cmi = cov_mod_info_list[i];
 
-          if(g_debug)
-            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] coverage_module_base: %p, full_path_of_coverage_module:%s\n", g_coverage_module_base, g_full_path_of_coverage_module);
-          break;
+          if(cmi->image_base != 0)
+          {
+            break;
+          }
+
+          if(strstr(g_full_path_of_coverage_module, cmi->module_name) != NULL)
+          {
+            unsigned long addr_start=0;
+            sscanf(addr1, "%lx", (long unsigned *)&addr_start);
+            cmi->image_base = addr_start;
+            cmi->image_end = addr_start + cmi->rva_size;
+            strcpy(cmi->full_path, g_full_path_of_coverage_module);
+
+            if(g_debug)
+              fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] coverage_module_base: %p, full_path_of_coverage_module:%s\n", cmi->image_base, cmi->full_path);
+            break;
+          }
         }
         g_full_path_of_coverage_module[0] = '\x00';
     }
@@ -5959,7 +5999,24 @@ void realloc_callback()
   set_register_value("$rax", ret_addr);
 }
 
+COV_MOD_INFO * get_cov_mod_info_by_pc(CORE_ADDR pc)
+{
+    COV_MOD_INFO * ret = NULL;
+    for(int i = 0; i <  cov_mod_info_list.size(); i++)
+    {
+      COV_MOD_INFO* cmi = cov_mod_info_list[i];
+      CORE_ADDR start = cmi->image_base;
+      CORE_ADDR end = cmi->image_end;
 
+      if(pc >= start && pc <= end)
+      {
+        ret = cmi;
+        break;
+      }
+    }
+
+    return ret;
+}
 
 /* Come here when the program has stopped with a signal.  */
 
@@ -6268,49 +6325,56 @@ handle_signal_stop (struct execution_control_state *ecs)
       }
 
 
-      if(!g_fixed_cov_base_addr && g_full_path_of_coverage_module[0] == '\x00' && g_coverage_module_name != NULL)
+      COV_MOD_INFO* cmi = get_cov_mod_info_by_pc(pc);
+
+      if(cmi == NULL)
       {
         parse_maps(ecs->ptid.pid());
+        cmi = get_cov_mod_info_by_pc(pc);
       }
 
-      // location to add trapfuzzer patch
-      unsigned int voff = pc - g_coverage_module_base;
-
-      // exit point
-      if(is_exit_bb(voff))
+      if(cmi != NULL)
       {
-        if(g_debug)
-          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, voff:0x%X\n", voff);
+        // location to add trapfuzzer patch
+        unsigned int voff = pc - cmi->image_base;
 
-        // save_trace_info(NORMAL);
-
-        if(g_in_fuzz_mode)
+        // exit point
+        if(is_exit_bb(voff))
         {
-          g_exec_status = NORMAL;
-          run_command ("", 0);
-          prepare_to_wait (ecs);
+          if(g_debug)
+            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, voff:0x%X\n", voff);
+
+          // save_trace_info(NORMAL);
+
+          if(g_in_fuzz_mode)
+          {
+            g_exec_status = NORMAL;
+            run_command ("", 0);
+            prepare_to_wait (ecs);
+          }
+          else
+          {
+            stop_waiting (ecs);
+          }
+
+          if(g_debug)
+            fprintf_unfiltered (gdb_stdlog, "Exit, total exec count:%d\n", g_exec_count++);
+          return;
         }
-        else
+
+        if(cmi->bb_info_map[voff] != NULL)
         {
-          stop_waiting (ecs);
+          BB_INFO* info = cmi->bb_info_map[voff];
+          target_write_memory(pc, info->instr, info->instr_size);
+
+          if(g_debug)
+            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch to 0x%X\n", voff);
+
+          cmi->bb_trace.push_back(voff);
+          keep_going (ecs);
+          return;
         }
 
-        if(g_debug)
-          fprintf_unfiltered (gdb_stdlog, "Exit, total exec count:%d\n", g_exec_count++);
-        return;
-      }
-
-      if(g_bb_info_map[voff] != NULL)
-      {
-        BB_INFO* info = g_bb_info_map[voff];
-        target_write_memory(pc, info->instr, info->instr_size);
-
-        if(g_debug)
-          fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch to 0x%X\n", voff);
-
-        g_bb_trace.push_back(voff);
-        keep_going (ecs);
-        return;
       }
 
 
