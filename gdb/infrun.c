@@ -6342,10 +6342,8 @@ handle_signal_stop (struct execution_control_state *ecs)
         if(is_exit_bb(voff))
         {
           if(g_debug)
-            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, voff:0x%X\n", voff);
-
+            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] enter exit bb, %s!0x%X\n", cmi->module_name, voff);
           // save_trace_info(NORMAL);
-
           if(g_in_fuzz_mode)
           {
             g_exec_status = NORMAL;
@@ -6368,7 +6366,7 @@ handle_signal_stop (struct execution_control_state *ecs)
           target_write_memory(pc, info->instr, info->instr_size);
 
           if(g_debug)
-            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch to 0x%X\n", voff);
+            fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] patch to %s!0x%X\n", cmi->module_name, voff);
 
           cmi->bb_trace.push_back(voff);
           keep_going (ecs);
