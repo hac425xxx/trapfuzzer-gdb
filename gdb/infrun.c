@@ -5855,18 +5855,24 @@ int parse_maps(int pid)
     {
         fgets(buf, PATH_MAX, file);
         maps_split_line(buf, addr1, addr2, perm, offset, dev, inode, g_full_path_of_coverage_module);
-        // printf("%s-%s %s %s %s %s\t%s\n",addr1,addr2,perm,offset,dev,inode,pathname);
+
+        // fprintf_unfiltered (gdb_stdlog, "%s-%s %s %s %s %s\t%s\n",addr1,addr2,perm,offset,dev,inode, g_full_path_of_coverage_module);
+
         for(int i = 0; i <  cov_mod_info_list.size(); i++)
         {
           COV_MOD_INFO* cmi = cov_mod_info_list[i];
 
-          if(cmi->image_base != 0)
-          {
-            break;
-          }
+
+          // fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] search %s\n", cmi->module_name);
 
           if(strstr(g_full_path_of_coverage_module, cmi->module_name) != NULL)
           {
+
+            if(cmi->image_base != 0)
+            {
+              break;
+            }
+            
             unsigned long addr_start=0;
             sscanf(addr1, "%lx", (long unsigned *)&addr_start);
             cmi->image_base = addr_start;
@@ -6013,6 +6019,11 @@ COV_MOD_INFO * get_cov_mod_info_by_pc(CORE_ADDR pc)
         ret = cmi;
         break;
       }
+    }
+
+    if(ret == NULL || ret->image_base == 0)
+    {
+      return NULL;
     }
 
     return ret;
