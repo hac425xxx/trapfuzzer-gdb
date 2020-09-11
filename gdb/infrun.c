@@ -5861,17 +5861,18 @@ int parse_maps(int pid)
         for(int i = 0; i <  cov_mod_info_list.size(); i++)
         {
           COV_MOD_INFO* cmi = cov_mod_info_list[i];
-
+          
+          if(cmi->image_base != 0)
+          {
+            continue;
+          }
 
           // fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] search %s\n", cmi->module_name);
 
           if(strstr(g_full_path_of_coverage_module, cmi->module_name) != NULL)
           {
 
-            if(cmi->image_base != 0)
-            {
-              break;
-            }
+
             
             unsigned long addr_start=0;
             sscanf(addr1, "%lx", (long unsigned *)&addr_start);
