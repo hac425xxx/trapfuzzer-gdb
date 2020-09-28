@@ -6169,7 +6169,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     return;
   }
 
-  if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ABRT)
+  if (ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_ABRT || ecs->event_thread->suspend.stop_signal == GDB_SIGNAL_FPE)
   {
     // save_trace_info(CRASH);
     if(g_in_fuzz_mode)
@@ -6183,6 +6183,7 @@ handle_signal_stop (struct execution_control_state *ecs)
     {
       stop_waiting (ecs);
     }
+    if(g_debug)
     fprintf_unfiltered (gdb_stdlog, "ABORT, total exec count:%d\n", g_exec_count++);
     return;
   }
