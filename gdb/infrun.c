@@ -179,6 +179,16 @@ std::string get_context_string()
     return cmd_res;
 }
 
+
+void dump_stack_trace()
+{
+  std::string cmd_res = execute_command_to_string("bt 6", 0,  false);
+  fp = fopen("stacktrace.txt", "w");
+  fprintf (fp, "%s\n", cmd_res.c_str());
+  fclose(fp);
+}
+
+
 char trace_file_path[PATH_MAX];
 
 static void save_trace_info(enum TRACE_STATUS status)
@@ -226,6 +236,7 @@ static void save_trace_info(enum TRACE_STATUS status)
     fp = fopen("gdb.crash", "w");
     fprintf (fp, "%s\n", g_crash_info_string.c_str());
     fclose(fp);
+    dump_stack_trace();
   }
 
   fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] save_trace_info done\n");
