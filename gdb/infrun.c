@@ -175,17 +175,15 @@ std::string get_context_string()
 {
     std::string cmd_res = execute_command_to_string("i r", 0,  false);
     cmd_res += execute_command_to_string("x/4i $pc", 0,  false);
-    cmd_res += execute_command_to_string("bt 4", 0,  false);
+    std::string bt = execute_command_to_string("bt 6", 0,  false);
+
+    FILE* fp = fopen("stacktrace.txt", "w");
+    fprintf (fp, "%s\n", bt.c_str());
+    fclose(fp);
+
+    cmd_res += bt;
+
     return cmd_res;
-}
-
-
-void dump_stack_trace()
-{
-  std::string cmd_res = execute_command_to_string("bt 6", 0,  false);
-  FILE* fp = fopen("stacktrace.txt", "w");
-  fprintf (fp, "%s\n", cmd_res.c_str());
-  fclose(fp);
 }
 
 
@@ -194,9 +192,6 @@ char trace_file_path[PATH_MAX];
 static void save_trace_info(enum TRACE_STATUS status)
 {
 
-
-  if(!g_in_fuzz_mode)
-    return;
 
   FILE* fp = fopen("gdb.status", "w");
 
@@ -236,7 +231,6 @@ static void save_trace_info(enum TRACE_STATUS status)
     fp = fopen("gdb.crash", "w");
     fprintf (fp, "%s\n", g_crash_info_string.c_str());
     fclose(fp);
-    dump_stack_trace();
   }
 
   fprintf_unfiltered (gdb_stdlog, "[trapfuzzer] save_trace_info done\n");
@@ -1727,10 +1721,7 @@ static void
 infrun_inferior_exit (struct inferior *inf)
 {
 
-  if(g_in_fuzz_mode)
-  {
-    save_trace_info(g_exec_status);
-  }
+  save_trace_info(g_exec_status);
 
   if(g_patch_to_binary)
   {
