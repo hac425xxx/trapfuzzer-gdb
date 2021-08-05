@@ -729,11 +729,9 @@ load_trapfuzzer_info (const char *args, int from_tty)
     return;
   }
 
-  if(g_debug)
-  {
-    fprintf_unfiltered (gdb_stdlog, "load-trapfuzzer-info %s\n", args);
-  }
 
+  fprintf_unfiltered (gdb_stdlog, "loading %s...\n", args);
+  
 
   COV_MOD_INFO* cmi = new COV_MOD_INFO;
 
@@ -765,7 +763,7 @@ load_trapfuzzer_info (const char *args, int from_tty)
 
   cov_mod_info_list.push_back(cmi);
 
-  fprintf_unfiltered (gdb_stdlog, "load-trapfuzzer-info done\n");
+  fprintf_unfiltered (gdb_stdlog, "load %s ok!\n", args);
 }
 
 void
