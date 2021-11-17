@@ -173,6 +173,8 @@ static int infrun_is_async = -1;
 
 std::string get_context_string()
 {
+
+try{
     std::string cmd_res = execute_command_to_string("i r", 0,  false);
     cmd_res += execute_command_to_string("x/4i $pc", 0,  false);
     std::string bt = execute_command_to_string("bt 6", 0,  false);
@@ -182,8 +184,17 @@ std::string get_context_string()
     fclose(fp);
 
     cmd_res += bt;
-
     return cmd_res;
+}catch(...)
+{
+    FILE* fp = fopen("stacktrace.txt", "w");
+    fprintf (fp, "\n");
+    fclose(fp);
+
+return "";
+	
+}
+
 }
 
 
